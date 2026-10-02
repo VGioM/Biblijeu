@@ -1,0 +1,15 @@
+{
+  "fill": {"solid": "srgb:0.812,0.373,0.486,1.0"},
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "glyph.png",
+          "name": "Manette",
+          "fill": {"solid": "srgb:0.169,0.110,0.125,1.0"}
+        },
+        {"image-name": "background.png", "name": "Fond"}
+      ]
+    }
+  ]
+}
