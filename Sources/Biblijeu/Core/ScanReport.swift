@@ -6,6 +6,8 @@ enum ScanReport {
     static func runIfRequested() {
         let args = CommandLine.arguments
         if args.contains("--updates") { runUpdateReport() }
+        if args.contains("--install") { runInstall() }
+        if args.contains("--sign") { runSign() }
         if args.contains("--saves") { runSaveReport() }
         guard args.contains("--scan") else { return }
 
@@ -144,8 +146,81 @@ extension ScanReport {
                 verdict = "non comparable — dernière build publiée\(when) : \(update.latest)"
             }
             print("  • \(name) \(installed) \(verdict)")
+            let file = update.download.flatMap { URL(string: $0)?.lastPathComponent }
+            print("    \(String(repeating: " ", count: 46))fichier : \(file ?? "aucun fichier macOS reconnu")")
         }
         exit(0)
+    }
+
+    /// `Biblijeu --sign <app>…` does what the automatic signing does, and says
+    /// what it did.
+    static func runSign() {
+        let apps = CommandLine.arguments.drop { $0 != "--sign" }.dropFirst()
+            .filter { !$0.hasPrefix("--") }
+        var failed = false
+        for path in apps {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            do {
+                switch try AppSigner.repair(url) {
+                case .untouched:     print("  • \(url.lastPathComponent) : signature valide, rien à faire")
+                case .unquarantined: print("  • \(url.lastPathComponent) : signature valide, quarantaine levée")
+                case .resigned:      print("  • \(url.lastPathComponent) : signé à nouveau localement")
+                }
+            } catch {
+                failed = true
+                print("  ✗ \(url.lastPathComponent) : \(error.localizedDescription)")
+            }
+        }
+        exit(failed ? 1 : 0)
+    }
+
+    /// `Biblijeu --install <émulateur> [app]` installs the newest build the way
+    /// the button does. With an app path, that copy is the one replaced --
+    /// the way to try an install on a duplicate before trusting it with the
+    /// real thing.
+    static func runInstall() {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--install"), index + 1 < args.count else {
+            print("Usage : Biblijeu --install <id> [chemin de l'app]"); exit(2)
+        }
+        let id = args[index + 1]
+        let target: InstalledEmulator?
+        if index + 2 < args.count {
+            let url = URL(fileURLWithPath: (args[index + 2] as NSString).expandingTildeInPath)
+            target = ApplicationScanner.emulator(at: url)
+        } else {
+            let appFolders = ["/Applications",
+                              FileManager.default.homeDirectoryForCurrentUser
+                                  .appendingPathComponent("Applications").path]
+                .map { URL(fileURLWithPath: $0) }
+            target = ApplicationScanner.installedEmulators(in: appFolders).first { $0.id == id }
+        }
+        guard let emulator = target, emulator.id == id else {
+            print("« \(id) » introuvable."); exit(1)
+        }
+        let outcome: Result<URL, Error> = runBlocking {
+            guard let update = await UpdateChecker.update(for: emulator),
+                  let link = update.download.flatMap(URL.init(string:)) else {
+                return .failure(EmulatorInstaller.Failure(message: "Aucun fichier macOS reconnu."))
+            }
+            print("\(emulator.name) \(emulator.version ?? "?") → \(update.latest)\n  \(link)")
+            do {
+                return .success(try await EmulatorInstaller.install(emulator, from: link, sign: true) {
+                    print("  \($0)")
+                })
+            } catch {
+                return .failure(error)
+            }
+        }
+        switch outcome {
+        case .success(let app):
+            // The cache still holds the replaced bundle's Info.plist.
+            ApplicationScanner.clearCache()
+            let version = ApplicationScanner.bundleInfo(at: app)["CFBundleShortVersionString"] as? String
+            print("✓ Installé : \(app.path) (\(version ?? "?"))"); exit(0)
+        case .failure(let error):
+            print("✗ \(error.localizedDescription)"); exit(1)
+        }
     }
 
     /// `runIfRequested` is called before the app has a run loop, so the async

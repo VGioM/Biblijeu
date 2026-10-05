@@ -83,7 +83,7 @@ enum SystemCatalog {
                    folderAliases: ["3ds", "n3ds", "nintendo 3ds"],
                    emulators: ["azahar", "lime3ds", "citra"]),
 
-        GameSystem(id: "gc", name: "GameCube", shortName: "GameCube",
+        GameSystem(id: "gc", name: "Nintendo GameCube", shortName: "GameCube",
                    manufacturer: "Nintendo", symbol: "cube", year: 2001,
                    libretroFolder: "Nintendo - GameCube",
                    fileExtensions: ["gcm", "gcz", "rvz", "ciso", "iso", "wia"],
@@ -98,7 +98,7 @@ enum SystemCatalog {
                    folderAliases: ["wii"],
                    emulators: ["dolphin"]),
 
-        GameSystem(id: "wiiu", name: "Wii U", shortName: "Wii U",
+        GameSystem(id: "wiiu", name: "Nintendo Wii U", shortName: "Wii U",
                    manufacturer: "Nintendo", symbol: "wave.3.right", year: 2012,
                    libretroFolder: "Nintendo - Wii U",
                    fileExtensions: ["wud", "wux", "wua", "rpx"],

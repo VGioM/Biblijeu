@@ -106,8 +106,10 @@ fois par jour, Biblijeu leur demande leur version la plus récente.
 
 La section **Mises à jour** de la barre latérale range les émulateurs en trois
 groupes — « à mettre à jour », « à jour », « non vérifiables » — avec, pour
-chacun, la version installée et celle publiée. Chaque ligne est un lien : un clic
-ouvre la page d'où se télécharge la nouvelle build. Le nombre de mises à jour en
+chacun, la version installée et celle publiée. Quand la release contient un
+fichier macOS reconnaissable, un bouton **Installer** télécharge la nouvelle
+build et remplace l'ancienne (voir plus bas) ; la flèche à droite ouvre toujours
+la page du projet. Le nombre de mises à jour en
 attente s'affiche en orange à droite de la ligne, comme un compteur de bibliothèque.
 Le bouton « Vérifier maintenant » force un tour.
 
@@ -175,6 +177,46 @@ Deux détails valent d'être connus :
   précédent**, repesée contre la version installée du moment, au lieu de
   disparaître — sans quoi le silence passerait pour « tout est à jour ». Les
   muets sont nommés sous la liste.
+
+### Installation et signature automatiques
+
+Deux réglages, en tête de la vue **Mises à jour**, tous deux activés par défaut :
+
+- **Installer automatiquement les mises à jour.** Après le tour du jour, chaque
+  émulateur « à mettre à jour » est téléchargé et remplacé, un par un. Le
+  fichier est choisi parmi ceux de la release (GitHub) ou du flux Dolphin par un
+  score : il doit ressembler à une build Mac (`mac`, `macos`, `osx` ou un
+  `.dmg`), sans mot d'une autre plateforme, de symboles de débogage, de source ou
+  de cœur libretro ; la build pour le processeur du Mac passe devant l'universelle,
+  qui passe devant celle de l'autre processeur ; `unsigned`, `experimental`,
+  `legacy` reculent d'un point. `.dmg` (hdiutil), `.zip` (ditto), `.tar.*` et
+  `.7z` (tar / libarchive) sont ouverts, y compris une archive dans l'archive.
+  Garde-fou : l'app trouvée doit porter **l'identifiant de bundle de
+  l'émulateur**, sinon rien n'est installé. La nouvelle build est posée à côté
+  de l'ancienne, sous son propre nom (PCSX2 met sa version dans le nom du
+  bundle) ; l'ancienne part à la **Corbeille**, et revient en place si la copie
+  échoue. Un émulateur **ouvert n'est jamais remplacé**. Une build n'est tentée
+  automatiquement **qu'une fois** (`auto-installs.json`) : si elle ne prend pas,
+  c'est le bouton qui reste, plutôt qu'un téléchargement à chaque lancement.
+  Les verdicts « non comparable » ne déclenchent rien.
+- **Signer automatiquement les émulateurs.** Ce que l'on faisait à la main
+  après chaque mise à jour : si la signature tient (`codesign --verify --deep
+  --strict`), seule la quarantaine est levée ; sinon les attributs étendus sont
+  effacés (`xattr -cr`, sans quoi codesign refuse les « detritus » de Ryujinx)
+  et l'app est signée ad hoc (`codesign --force --deep --sign -
+  --preserve-metadata=entitlements`, pour garder le droit au JIT). Une app
+  signée Developer ID garde sa signature. Le contrôle a lieu après chaque
+  installation, et à chaque analyse pour tout émulateur **dont l'exécutable a
+  changé** depuis la fois précédente (`signatures.json`) — ce qui couvre les
+  émulateurs qui se mettent à jour eux-mêmes et ceux ajoutés à la main. La toute
+  première fois, les émulateurs présents sont seulement notés, pas modifiés :
+  ils fonctionnent tels quels.
+
+Clic droit sur une ligne : « Vérifier et signer l'app » fait la même chose à la
+demande, pour n'importe quel émulateur.
+
+Limites : RPCS3 publie ses builds Mac dans un autre dépôt que ses versions, et
+Ryujinx n'a pas de source — pour eux, la page reste le chemin.
 
 ### CrossOver : bouteilles et raccourcis
 
@@ -434,7 +476,15 @@ dist/Biblijeu.app/Contents/MacOS/Biblijeu --updates
 
 pose aux projets la même question que les réglages, et imprime le raisonnement :
 version installée, version publiée, et le verdict — « à jour », « ▲ disponible »
-ou « non comparable » avec la raison.
+ou « non comparable » avec la raison — et le fichier macOS qui serait installé.
+
+```bash
+dist/Biblijeu.app/Contents/MacOS/Biblijeu --install astris
+dist/Biblijeu.app/Contents/MacOS/Biblijeu --install astris /tmp/essai/Astris.app
+```
+
+installe la dernière build comme le bouton. Avec un chemin, c'est cette copie
+qui est remplacée : de quoi essayer sur un double avant l'app elle-même.
 
 ```bash
 dist/Biblijeu.app/Contents/MacOS/Biblijeu --saves
@@ -467,11 +517,13 @@ Sources/Biblijeu/
     PlayStore.swift       favoris, historique, choix d'émulateur, jaquettes
     NameParser.swift      nettoyage des noms de dumps
     ArtworkCache.swift    cache disque + mémoire des images
-    ScanReport.swift      les modes --scan, --updates et --saves
+    ScanReport.swift      les modes --scan, --updates, --install et --saves
     SaveCatalog.swift     où chaque émulateur range ses sauvegardes
     BackupEngine.swift    la copie incrémentale, dans un sens ou dans l'autre
     BackupManager.swift   destination, minuterie, lancement, fermeture, manifeste
     ConfigFile.swift      lecture d'un réglage dans la configuration d'un émulateur
+    UpdateChecker.swift   versions publiées, verdicts, choix du fichier macOS
+    EmulatorInstaller.swift  téléchargement, décompression, remplacement, signature
   Artwork/
     LibretroThumbnails.swift  index et appariement
     SteamGridDBProvider.swift

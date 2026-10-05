@@ -1,13 +1,14 @@
 import SwiftUI
 
 /// What each installed emulator's project has published, next to what is on
-/// disk. A row whose project could be reached is a link: clicking it opens the
-/// page the new build is downloaded from.
+/// disk. A row whose new build Biblijeu can fetch has an « Installer » button;
+/// the page the build comes from stays one click away on the arrow.
 ///
 /// The same view serves the sidebar section and the settings tab, so the two
 /// can never drift apart.
 struct EmulatorUpdatesView: View {
     @ObservedObject var model: LibraryModel
+    @ObservedObject private var settings = AppSettings.shared
 
     var body: some View {
         // A List rather than a Form: a grouped Form keeps a leading column free
@@ -16,10 +17,28 @@ struct EmulatorUpdatesView: View {
         List {
             Section { header }
 
+            Section {
+                Toggle("Installer automatiquement les mises à jour", isOn: $settings.autoInstallUpdates)
+                    .help("Télécharge la nouvelle version depuis la page du projet et remplace l'ancienne, qui part dans la Corbeille. Un émulateur ouvert n'est jamais remplacé.")
+                Toggle("Signer automatiquement les émulateurs", isOn: $settings.autoSignEmulators)
+                    .help("Après chaque nouvelle version, lève la quarantaine et, si la signature ne tient plus, signe l'app localement (comme codesign --force --deep --sign -).")
+            }
+
             if !available.isEmpty {
-                Section("À mettre à jour") {
+                Section {
                     ForEach(available) { row($0, tint: Theme.accentWarm,
                                              symbol: "arrow.down.circle.fill") }
+                } header: {
+                    HStack {
+                        Text("À mettre à jour")
+                        Spacer()
+                        let installable = available.map(\.emulator).filter(model.canInstallUpdate)
+                        if installable.count > 1 {
+                            Button("Tout installer") { model.installUpdates(installable) }
+                                .controlSize(.small)
+                                .disabled(installable.contains { model.emulatorActivity[$0.id] != nil })
+                        }
+                    }
                 }
             }
             if !current.isEmpty {
@@ -104,9 +123,13 @@ struct EmulatorUpdatesView: View {
         }
     }
 
-    @ViewBuilder
     private func row(_ row: Row, tint: Color, symbol: String) -> some View {
-        let content = HStack(alignment: .top, spacing: 10) {
+        let id = row.emulator.id
+        let activity = model.emulatorActivity[id]
+        let problem = model.emulatorProblems[id]
+        let done = model.emulatorNotes[id]
+
+        return HStack(alignment: .top, spacing: 10) {
             Image(systemName: symbol).foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -119,21 +142,50 @@ struct EmulatorUpdatesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let activity {
+                    Text(activity).font(.caption).foregroundStyle(Theme.accentWarm)
+                } else if let problem {
+                    Label(problem, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let done {
+                    Label(done, systemImage: "checkmark.seal")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
-            if row.page != nil {
-                Image(systemName: "arrow.up.right.square")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+            if activity != nil {
+                ProgressView().controlSize(.small)
+            } else if row.update?.verdict == .available, model.canInstallUpdate(row.emulator) {
+                Button("Installer") { model.installUpdates([row.emulator]) }
+                    .controlSize(.small)
+                    .help("Télécharger \(row.update?.latest ?? "la nouvelle version") et remplacer celle-ci")
             }
-        }
-
-        if let page = row.page {
-            Link(destination: page) { content }
+            if let page = row.page {
+                Link(destination: page) {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
                 .buttonStyle(.plain)
                 .help("Ouvrir \(page.host ?? "la page du projet")")
-        } else {
-            content
+            }
+        }
+        .contextMenu {
+            if row.update?.verdict == .available, model.canInstallUpdate(row.emulator) {
+                Button("Installer la mise à jour") { model.installUpdates([row.emulator]) }
+            }
+            Button("Vérifier et signer l'app") { model.signEmulator(row.emulator) }
+                .disabled(activity != nil)
+            if let page = row.page {
+                Link("Ouvrir la page du projet", destination: page)
+            }
+            Button("Afficher dans le Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([row.emulator.url])
+            }
         }
     }
 

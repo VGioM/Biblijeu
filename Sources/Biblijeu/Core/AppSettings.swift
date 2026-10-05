@@ -88,6 +88,17 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(backupExcludedEmulators, forKey: Keys.backupExcluded) }
     }
 
+    /// Download and install an emulator's new build as soon as the daily
+    /// check finds one, instead of only pointing at its page.
+    @Published var autoInstallUpdates: Bool {
+        didSet { defaults.set(autoInstallUpdates, forKey: Keys.autoInstallUpdates) }
+    }
+    /// Lift the quarantine and sign again, locally, any emulator whose build
+    /// changed and whose signature no longer holds.
+    @Published var autoSignEmulators: Bool {
+        didSet { defaults.set(autoSignEmulators, forKey: Keys.autoSignEmulators) }
+    }
+
     private let defaults = UserDefaults.standard
 
     private enum Keys {
@@ -112,6 +123,8 @@ final class AppSettings: ObservableObject {
         static let backupStates = "backupStates"   // remplacé par backupKinds
         static let backupKinds = "backupKinds"
         static let backupExcluded = "backupExcludedEmulators"
+        static let autoInstallUpdates = "autoInstallUpdates"
+        static let autoSignEmulators = "autoSignEmulators"
     }
 
     private init() {
@@ -131,7 +144,9 @@ final class AppSettings: ObservableObject {
             Keys.backupOnInterval: true,
             Keys.backupOnLaunch: true,
             Keys.backupOnQuit: true,
-            Keys.backupKinds: AppSettings.defaultBackupKinds
+            Keys.backupKinds: AppSettings.defaultBackupKinds,
+            Keys.autoInstallUpdates: true,
+            Keys.autoSignEmulators: true
         ])
         romFolders = defaults.stringArray(forKey: Keys.romFolders) ?? []
         applicationFolders = defaults.stringArray(forKey: Keys.appFolders)
@@ -166,6 +181,8 @@ final class AppSettings: ObservableObject {
         }
         backupKinds = kinds
         backupExcludedEmulators = defaults.stringArray(forKey: Keys.backupExcluded) ?? []
+        autoInstallUpdates = defaults.bool(forKey: Keys.autoInstallUpdates)
+        autoSignEmulators = defaults.bool(forKey: Keys.autoSignEmulators)
         if cardSize < 110 { cardSize = 168 }
         // A zero here would mean a timer firing as fast as it can. The upper
         // bound is a day: beyond that the timer is a pretence, since it only

@@ -111,6 +111,13 @@ final class LibraryModel: ObservableObject {
     /// the last time it was asked.
     @Published private(set) var staleUpdates: Set<String> = []
     @Published private(set) var isCheckingUpdates = false
+    /// What an install or a signing is doing right now, by emulator id
+    /// ("Téléchargement 42 %"…).
+    @Published private(set) var emulatorActivity: [String: String] = [:]
+    /// Why the last install or signing of an emulator failed, by id.
+    @Published private(set) var emulatorProblems: [String: String] = [:]
+    /// What the last install or signing did, by id, for the row to say so.
+    @Published private(set) var emulatorNotes: [String: String] = [:]
 
     private let settings = AppSettings.shared
     private let play = PlayStore.shared
@@ -118,6 +125,8 @@ final class LibraryModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var artworkTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
+    private var isInstalling = false
+    private var isCheckingSignatures = false
     private var hasScanned = false
     private var lastScan = Date.distantPast
     /// What the last scan found, before the user's corrections are applied.
@@ -351,6 +360,13 @@ final class LibraryModel: ObservableObject {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
 
+        // An emulator replaced since the answers came in -- by Biblijeu, by
+        // hand, by its own updater -- is weighed again at once.
+        if !emulatorUpdates.isEmpty {
+            emulatorUpdates = UpdateChecker.rejudged(emulatorUpdates, for: installedEmulators)
+        }
+        checkSignaturesIfNeeded()
+
         // Now that we know what is installed, find out whether any of it has
         // been superseded. Nothing happens when the last round is recent.
         checkForEmulatorUpdates()
@@ -377,6 +393,7 @@ final class LibraryModel: ObservableObject {
             staleUpdates = cached.stale ?? []
         }
         guard !isCheckingUpdates else { return }
+        defer { if !isCheckingUpdates { installUpdatesIfWanted() } }
         // Once per calendar day, on the first launch of the day -- unless the
         // last round left somebody unanswered, which is worth retrying sooner.
         guard force || UpdateChecker.isDue(since: updatesCheckedAt,
@@ -401,6 +418,160 @@ final class LibraryModel: ObservableObject {
                 self.emulatorUpdates = report.updates
                 self.updatesCheckedAt = report.checked
                 self.staleUpdates = report.stale ?? []
+                self.installUpdatesIfWanted()
+            }
+        }
+    }
+
+    // MARK: - Installing and signing emulators
+
+    /// Installs every build found newer, when the user asked for that.
+    ///
+    /// A build is tried once on its own: if it does not take -- the emulator
+    /// was open, the download failed, the new build still reads as outdated --
+    /// it is left for the button rather than downloaded again at every launch.
+    private func installUpdatesIfWanted() {
+        guard settings.autoInstallUpdates else { return }
+        var tried = AutoInstallLog.load()
+        let due = outdatedEmulators.filter { emulator in
+            guard let update = emulatorUpdates[emulator.id], update.download != nil else { return false }
+            return tried[emulator.id] != update.latest
+                && !EmulatorInstaller.isRunning(emulator.url)
+        }
+        guard !due.isEmpty else { return }
+        for emulator in due { tried[emulator.id] = emulatorUpdates[emulator.id]?.latest }
+        AutoInstallLog.save(tried)
+        Task { await self.install(due) }
+    }
+
+    /// Installs the new builds of `emulators`, one after the other.
+    func installUpdates(_ emulators: [InstalledEmulator]) {
+        Task { await self.install(emulators) }
+    }
+
+    /// Whether Biblijeu can fetch this emulator's new build by itself.
+    func canInstallUpdate(_ emulator: InstalledEmulator) -> Bool {
+        emulatorUpdates[emulator.id]?.download != nil
+    }
+
+    private func install(_ emulators: [InstalledEmulator]) async {
+        guard !isInstalling else { return }
+        isInstalling = true
+        defer { isInstalling = false }
+
+        var installedAny = false
+        for emulator in emulators {
+            let id = emulator.id
+            emulatorProblems[id] = nil
+            emulatorNotes[id] = nil
+            guard !EmulatorInstaller.isRunning(emulator.url) else {
+                emulatorProblems[id] = "\(emulator.name) est ouvert : quittez-le, puis réessayez."
+                continue
+            }
+            emulatorActivity[id] = "Recherche du fichier…"
+
+            // An answer saved before downloads were tracked has no link: ask
+            // the project again, for this emulator only.
+            var update = emulatorUpdates[id]
+            if update?.download == nil {
+                update = await UpdateChecker.update(for: emulator)
+            }
+            guard let link = update?.download.flatMap(URL.init(string:)) else {
+                emulatorActivity[id] = nil
+                emulatorProblems[id] = "Aucun fichier macOS reconnu dans la dernière version : passez par la page du projet."
+                continue
+            }
+
+            let sign = settings.autoSignEmulators
+            do {
+                let app = try await Task.detached(priority: .userInitiated) {
+                    try await EmulatorInstaller.install(emulator, from: link, sign: sign) { status in
+                        Task { @MainActor in self.emulatorActivity[id] = status }
+                    }
+                }.value
+                SignatureLedger.note(app)
+                emulatorNotes[id] = "Version \(update?.latest ?? "") installée"
+                    + (sign ? " et vérifiée." : ".") + " L'ancienne est dans la Corbeille."
+                installedAny = true
+            } catch {
+                emulatorProblems[id] = error.localizedDescription
+            }
+            emulatorActivity[id] = nil
+        }
+        if installedAny { rescan() }
+    }
+
+    /// Signs one emulator again, at the user's request.
+    func signEmulator(_ emulator: InstalledEmulator) {
+        let id = emulator.id
+        let url = emulator.url
+        guard emulatorActivity[id] == nil else { return }
+        emulatorActivity[id] = "Vérification de la signature…"
+        emulatorProblems[id] = nil
+        emulatorNotes[id] = nil
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try AppSigner.repair(url) }
+            }.value
+            emulatorActivity[id] = nil
+            switch result {
+            case .success(let outcome):
+                emulatorNotes[id] = Self.describe(outcome)
+                SignatureLedger.note(url)
+            case .failure(let error):
+                emulatorProblems[id] = error.localizedDescription
+            }
+        }
+    }
+
+    private static func describe(_ outcome: AppSigner.Outcome) -> String {
+        switch outcome {
+        case .untouched:     return "Signature valide : rien à faire."
+        case .unquarantined: return "Signature valide ; la quarantaine a été levée."
+        case .resigned:      return "Signé à nouveau localement."
+        }
+    }
+
+    /// Checks the signature of every emulator whose build changed since it was
+    /// last looked at, and repairs the ones that need it.
+    ///
+    /// The very first time, the emulators are only noted, not touched: the
+    /// ones already here run as they are, and an app that works is not one to
+    /// sign behind its owner's back. Everything after that -- a new build, a
+    /// newly added emulator -- is checked.
+    private func checkSignaturesIfNeeded() {
+        guard settings.autoSignEmulators, !isCheckingSignatures else { return }
+        let apps = installedEmulators.map { ($0.id, $0.url) }
+        guard !apps.isEmpty else { return }
+        isCheckingSignatures = true
+
+        Task {
+            let found = await Task.detached(priority: .utility) { () -> [(String, Result<AppSigner.Outcome, Error>)] in
+                let firstTime = SignatureLedger.load() == nil
+                var ledger = SignatureLedger.load() ?? [:]
+                var results: [(String, Result<AppSigner.Outcome, Error>)] = []
+                for (id, url) in apps {
+                    let path = url.standardizedFileURL.path
+                    guard let stamp = SignatureLedger.stamp(of: url), ledger[path] != stamp else { continue }
+                    if !firstTime {
+                        let outcome = Result { try AppSigner.repair(url) }
+                        results.append((id, outcome))
+                        if case .failure = outcome { continue }
+                    }
+                    // Read again: signing rewrites the executable.
+                    ledger[path] = SignatureLedger.stamp(of: url) ?? stamp
+                }
+                SignatureLedger.save(ledger)
+                return results
+            }.value
+
+            isCheckingSignatures = false
+            for (id, result) in found {
+                switch result {
+                case .success(.untouched): break
+                case .success(let outcome): emulatorNotes[id] = Self.describe(outcome)
+                case .failure(let error): emulatorProblems[id] = error.localizedDescription
+                }
             }
         }
     }

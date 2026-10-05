@@ -35,6 +35,10 @@ struct EmulatorUpdate: Codable, Hashable {
     /// remembered answer can be weighed again the same way. Optional so a
     /// report written before this existed still decodes.
     var tagged: Date?
+    /// The file the macOS build comes in -- a `.dmg`, a `.zip`, an archive --
+    /// when the project publishes one Biblijeu can pick out with confidence.
+    /// Optional so a report written before this existed still decodes.
+    var download: String?
 }
 
 /// One round of questions, kept on disk so opening the settings twice in a
@@ -177,22 +181,24 @@ enum UpdateChecker {
         guard let source = emulator.spec.updates else { return nil }
         return judged(emulator, source: source, latest: update.latest,
                       page: update.page, published: update.published,
-                      tagged: update.tagged)
+                      tagged: update.tagged, download: update.download)
     }
 
-    private static func update(for emulator: InstalledEmulator) async -> EmulatorUpdate? {
+    /// Asks one project right now, whatever the last round said. Used when an
+    /// install needs a download link that an older saved answer lacks.
+    static func update(for emulator: InstalledEmulator) async -> EmulatorUpdate? {
         guard let source = emulator.spec.updates,
               let build = try? await latestBuild(from: source) else { return nil }
         return judged(emulator, source: source, latest: build.version,
                       page: build.page ?? source.page, published: build.published,
-                      tagged: build.tagged)
+                      tagged: build.tagged, download: build.download)
     }
 
     /// Weighs one answer. Version numbers decide whenever they can; only when
     /// they cannot does the calendar get a say.
     private static func judged(_ emulator: InstalledEmulator, source: UpdateSource,
                                latest: String, page: String, published: Date?,
-                               tagged: Date?) -> EmulatorUpdate {
+                               tagged: Date?, download: String?) -> EmulatorUpdate {
         var verdict = compare(installed: emulator.version, latest: latest, from: source)
         var byDate = false
         let landed = installedOn(emulator.url)
@@ -217,7 +223,8 @@ enum UpdateChecker {
                               verdict: verdict,
                               byDate: byDate,
                               installedOn: byDate ? landed : nil,
-                              tagged: tagged)
+                              tagged: tagged,
+                              download: download)
     }
 
     /// When the build now installed landed on this Mac.
@@ -256,6 +263,8 @@ enum UpdateChecker {
         let published: Date?
         /// When the build's commit was tagged, for the sources that say.
         let tagged: Date?
+        /// The macOS file, when one could be picked out.
+        var download: String? = nil
     }
 
     private static func latestBuild(from source: UpdateSource) async throws -> Build {
@@ -276,6 +285,17 @@ enum UpdateChecker {
         /// The tagged commit's date -- when the build started rather than when
         /// its files finished uploading.
         let createdAt: Date?
+        let assets: [Asset]?
+
+        struct Asset: Decodable {
+            let name: String
+            let url: String
+
+            enum CodingKeys: String, CodingKey {
+                case name
+                case url = "browser_download_url"
+            }
+        }
 
         enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
@@ -283,6 +303,7 @@ enum UpdateChecker {
             case htmlURL = "html_url"
             case publishedAt = "published_at"
             case createdAt = "created_at"
+            case assets
         }
 
         /// The name when it carries numbers, the tag otherwise -- a name like
@@ -327,13 +348,24 @@ enum UpdateChecker {
             }
             release = newest
         }
+        let assets = release.assets ?? []
+        let chosen = macAsset(among: assets.map(\.name)).flatMap { name in
+            assets.first { $0.name == name }?.url
+        }
         return Build(version: release.version, page: release.htmlURL,
-                     published: release.publishedAt, tagged: release.createdAt)
+                     published: release.publishedAt, tagged: release.createdAt,
+                     download: chosen)
     }
 
     private struct DolphinBuild: Decodable {
         let shortrev: String
         let date: String?
+        let artifacts: [Artifact]?
+
+        struct Artifact: Decodable {
+            let system: String
+            let url: String
+        }
     }
 
     private static func dolphinBuild() async throws -> Build {
@@ -344,9 +376,90 @@ enum UpdateChecker {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         // Dolphin's feed names one build and dates it; there is no commit date
         // to prefer, so the publication is what the calendar gets to weigh.
+        // Each artifact names its platform in words ("macOS (ARM/Intel
+        // Universal)"); the file name settles anything the words leave open.
+        let mac = build.artifacts?.first {
+            $0.system.lowercased().contains("macos") && macAsset(among: [fileName($0.url)]) != nil
+        }
         return Build(version: build.shortrev, page: nil,
                      published: build.date.flatMap { formatter.date(from: $0) },
-                     tagged: nil)
+                     tagged: nil, download: mac?.url)
+    }
+
+    private static func fileName(_ link: String) -> String {
+        URL(string: link)?.lastPathComponent ?? link
+    }
+
+    // MARK: - Picking the macOS file
+
+    /// The archive formats Biblijeu can open by itself: `hdiutil` for disk
+    /// images, `ditto` for zips, and the system `tar` -- libarchive -- for the
+    /// rest, `.7z` included.
+    static let installableExtensions = [".dmg", ".zip", ".tar.xz", ".tar.gz", ".tgz",
+                                        ".tar.bz2", ".tbz", ".tar", ".7z"]
+
+    /// Words that rule a file out: another platform, debugging symbols, the
+    /// source code, a libretro core rather than the app.
+    private static let foreignWords = [
+        "windows", "win32", "win64", "linux", "ubuntu", "debian", "appimage", "flatpak",
+        "android", "ios", "iphone", "ipados", "tvos", "freebsd", "netbsd", "openbsd",
+        "switch", "vita", "3ds", "wii", "dsym", "symbols", "pdb", "dbg", "debug",
+        "libretro", "source", "src"
+    ]
+
+    /// Which of a release's files is the macOS app, or nil when none can be
+    /// told apart with confidence.
+    ///
+    /// Projects name their files every which way -- `cemu-2.6-macos-12-x64.dmg`,
+    /// `duckstation-mac-release.zip`, `macos-arm64-latest.dmg`,
+    /// `OpenEmu_2.4.1.zip` -- so the choice is a score rather than a pattern:
+    /// a file has to look like a Mac build, then the one built for this
+    /// processor wins over a universal one, which wins over one for the other
+    /// processor. A wrong pick is caught later anyway: the app inside must
+    /// carry the emulator's own bundle identifier or nothing is installed.
+    static func macAsset(among names: [String]) -> String? {
+        var best: (name: String, score: Int)?
+        for name in names {
+            let lower = name.lowercased()
+            guard installableExtensions.contains(where: { lower.hasSuffix($0) }) else { continue }
+            let words = Set(lower.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+            if foreignWords.contains(where: { words.contains($0) }) { continue }
+            // Glued to other words often enough ("dSYMs", "AppImage.zsync")
+            // to be looked for anywhere in the name.
+            if ["dsym", "appimage", "libretro", "symbols"].contains(where: { lower.contains($0) }) { continue }
+            if lower.contains("sha256") || lower.contains("checksum") { continue }
+
+            let saysMac = words.contains { ["mac", "macos", "osx", "darwin", "apple"].contains($0) }
+            let isImage = lower.hasSuffix(".dmg")
+            // Nothing else in the release spoke of another platform either, so
+            // an unlabelled zip is the Mac build only for a Mac-only project.
+            let unlabelled = !saysMac && !isImage
+            if unlabelled && names.contains(where: { other in
+                let o = other.lowercased()
+                return o != lower && ["windows", "linux", "win64", "appimage"].contains { o.contains($0) }
+            }) { continue }
+
+            var score = 0
+            if saysMac || isImage { score += 10 }
+            if words.contains("macos") { score += 1 }
+
+            let arm = words.contains { ["arm64", "aarch64", "applesilicon", "arm"].contains($0) }
+            let intel = words.contains { ["x86", "x64", "x86_64", "intel", "amd64"].contains($0) }
+                || lower.contains("x86_64")
+            let universal = words.contains("universal")
+            #if arch(arm64)
+            if arm { score += 4 } else if universal { score += 3 } else if !intel { score += 2 }
+            #else
+            if intel { score += 4 } else if universal { score += 3 } else if !arm { score += 2 }
+            #endif
+
+            // A project offering both prefers you take the finished one.
+            if words.contains("unsigned") || words.contains("experimental")
+                || words.contains("legacy") || words.contains("nightly") { score -= 1 }
+
+            if best == nil || score > best!.score { best = (name, score) }
+        }
+        return best?.name
     }
 
     // MARK: - Comparing
