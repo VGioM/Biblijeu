@@ -21,7 +21,10 @@ struct SidebarView: View {
                 row(.backups)
             }
 
+            // Alphabetical here, unlike the manufacturer/year order used elsewhere:
+            // a list you scan for a name.
             let systems = model.systemsWithGames
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             if !systems.isEmpty {
                 Section("Consoles") {
                     ForEach(systems) { system in
