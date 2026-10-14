@@ -194,6 +194,21 @@ enum UpdateChecker {
                       tagged: build.tagged, download: build.download)
     }
 
+    /// What a project publishes right now, for an emulator not installed yet.
+    static func latestBuild(for spec: EmulatorSpec) async -> Build? {
+        guard let source = spec.updates else { return nil }
+        return try? await latestBuild(from: source)
+    }
+
+    /// The answer `build` gives for an emulator just installed from it, so its
+    /// row says « à jour » without asking the project a second time.
+    static func answer(for emulator: InstalledEmulator, build: Build) -> EmulatorUpdate? {
+        guard let source = emulator.spec.updates else { return nil }
+        return judged(emulator, source: source, latest: build.version,
+                      page: build.page ?? source.page, published: build.published,
+                      tagged: build.tagged, download: build.download)
+    }
+
     /// Weighs one answer. Version numbers decide whenever they can; only when
     /// they cannot does the calendar get a say.
     private static func judged(_ emulator: InstalledEmulator, source: UpdateSource,
@@ -257,7 +272,7 @@ enum UpdateChecker {
 
     // MARK: - The sources
 
-    private struct Build {
+    struct Build {
         let version: String
         let page: String?
         let published: Date?

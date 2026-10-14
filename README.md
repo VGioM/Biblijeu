@@ -113,6 +113,16 @@ la page du projet. Le nombre de mises à jour en
 attente s'affiche en orange à droite de la ligne, comme un compteur de bibliothèque.
 Le bouton « Vérifier maintenant » force un tour.
 
+Un quatrième groupe, **« non installés »**, liste les émulateurs du catalogue
+qui ont une source de mise à jour mais qu'on ne trouve pas sur ce Mac. Leur
+bouton **Installer** demande au projet sa dernière build, la télécharge, la
+pose dans le premier dossier d'applications accessible en écriture
+(/Applications par défaut) et la signe dans tous les cas : une app qui n'a
+jamais tourné ici n'a rien qu'une signature locale puisse casser. L'app
+téléchargée doit porter l'identifiant de bundle de l'émulateur ou, à défaut,
+le nom de son exécutable (VisualBoyAdvance-M ne déclare pas d'identifiant). Rien
+n'est écrasé : si un fichier porte déjà ce nom, l'installation s'arrête.
+
 La même vue est aussi l'onglet **Réglages → Mises à jour** : une seule
 implémentation, pour que les deux ne puissent pas diverger. Elle est bâtie sur
 une `List` et non un `Form` — un `Form` groupé réserve une colonne de libellés,
@@ -484,7 +494,9 @@ dist/Biblijeu.app/Contents/MacOS/Biblijeu --install astris /tmp/essai/Astris.app
 ```
 
 installe la dernière build comme le bouton. Avec un chemin, c'est cette copie
-qui est remplacée : de quoi essayer sur un double avant l'app elle-même.
+qui est remplacée : de quoi essayer sur un double avant l'app elle-même. Un
+émulateur absent est installé de neuf dans /Applications, ou dans le dossier
+donné à la place d'une app (`--install vbam /tmp/essai`).
 
 ```bash
 dist/Biblijeu.app/Contents/MacOS/Biblijeu --saves

@@ -231,6 +231,32 @@ enum EmulatorInstaller {
     /// `progress` gets a short French status line as things move along.
     static func install(_ emulator: InstalledEmulator, from link: URL, sign: Bool,
                         progress: @escaping @Sendable (String) -> Void) async throws -> URL {
+        // Whatever the installed copy declares counts too, which covers
+        // emulators the catalogue only inferred.
+        var ids: Set<String> = []
+        if let own = ApplicationScanner.bundleInfo(at: emulator.url)["CFBundleIdentifier"] as? String {
+            ids.insert(own.lowercased())
+        }
+        return try await install(emulator.spec, extraIDs: ids, from: link, sign: sign,
+                                 progress: progress) { fresh in
+            try replace(emulator.url, with: fresh)
+        }
+    }
+
+    /// Installs an emulator this Mac does not have yet, into `folder`.
+    ///
+    /// Always signed: an app that has never run here has no working state a
+    /// new signature could break, and an unsigned one would not open at all.
+    static func installNew(_ spec: EmulatorSpec, into folder: URL, from link: URL,
+                           progress: @escaping @Sendable (String) -> Void) async throws -> URL {
+        try await install(spec, extraIDs: [], from: link, sign: true, progress: progress) { fresh in
+            try place(fresh, in: folder)
+        }
+    }
+
+    private static func install(_ spec: EmulatorSpec, extraIDs: Set<String>, from link: URL,
+                                sign: Bool, progress: @escaping @Sendable (String) -> Void,
+                                put: (URL) throws -> URL) async throws -> URL {
         let staging = try stagingFolder()
         defer { try? FileManager.default.removeItem(at: staging) }
 
@@ -244,13 +270,12 @@ enum EmulatorInstaller {
         try FileManager.default.createDirectory(at: unpacked, withIntermediateDirectories: true)
         try unpack(archive, into: unpacked, depth: 0)
 
-        let wanted = bundleIDs(for: emulator)
-        guard let fresh = findApp(in: unpacked, matching: wanted) else {
-            throw Failure(message: "Le fichier téléchargé ne contient pas \(emulator.name).")
+        guard let fresh = findApp(in: unpacked, matching: { isBuild(of: spec, extraIDs: extraIDs, at: $0) }) else {
+            throw Failure(message: "Le fichier téléchargé ne contient pas \(spec.name).")
         }
 
         progress("Installation…")
-        let installed = try replace(emulator.url, with: fresh)
+        let installed = try put(fresh)
 
         if sign {
             progress("Signature…")
@@ -271,15 +296,24 @@ enum EmulatorInstaller {
         return installed
     }
 
-    /// The bundle identifiers the new build must carry: the catalogue's, and
-    /// whatever the installed copy declares, which covers emulators the
-    /// catalogue only inferred.
-    private static func bundleIDs(for emulator: InstalledEmulator) -> Set<String> {
-        var ids = Set(emulator.spec.bundleIDs.map { $0.lowercased() })
-        if let own = ApplicationScanner.bundleInfo(at: emulator.url)["CFBundleIdentifier"] as? String {
-            ids.insert(own.lowercased())
+    /// Whether the app at `url` is a build of `spec`: by one of the bundle
+    /// identifiers it must carry, or -- the way the scanner would recognise
+    /// it -- by its executable's name.
+    private static func isBuild(of spec: EmulatorSpec, extraIDs: Set<String>, at url: URL) -> Bool {
+        let plist = url.appendingPathComponent("Contents/Info.plist")
+        let info = NSDictionary(contentsOf: plist) as? [String: Any] ?? [:]
+        if let id = info["CFBundleIdentifier"] as? String {
+            let id = id.lowercased()
+            if extraIDs.contains(id) || spec.bundleIDs.contains(where: { $0.lowercased() == id }) {
+                return true
+            }
+            // Another emulator the catalogue knows: not this one, whatever
+            // its executable is called.
+            if EmulatorCatalog.spec(forBundleID: id) != nil { return false }
         }
-        return ids
+        let executable = info["CFBundleExecutable"] as? String
+            ?? url.deletingPathExtension().lastPathComponent
+        return spec.executableNames.contains { $0.caseInsensitiveCompare(executable) == .orderedSame }
     }
 
     // MARK: - Unpacking
@@ -296,7 +330,7 @@ enum EmulatorInstaller {
             try check(Shell.run("/usr/bin/tar", ["-xf", file.path, "-C", folder.path]), "tar")
         }
 
-        guard depth < 2, findApp(in: folder, matching: nil) == nil else { return }
+        guard depth < 2, findApp(in: folder, matching: { _ in true }) == nil else { return }
         for inner in archives(in: folder) {
             let next = folder.appendingPathComponent("inner-\(depth)-\(inner.lastPathComponent)",
                                                      isDirectory: true)
@@ -342,19 +376,13 @@ enum EmulatorInstaller {
         return found
     }
 
-    /// The first `.app` under `folder` carrying one of `ids` -- any app at all
-    /// when `ids` is nil.
-    private static func findApp(in folder: URL, matching ids: Set<String>?) -> URL? {
+    /// The first `.app` under `folder` that `accepts` takes.
+    private static func findApp(in folder: URL, matching accepts: (URL) -> Bool) -> URL? {
         let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)
         while let url = enumerator?.nextObject() as? URL {
             guard url.pathExtension.lowercased() == "app" else { continue }
             enumerator?.skipDescendants()
-            guard let ids else { return url }
-            let plist = url.appendingPathComponent("Contents/Info.plist")
-            let info = NSDictionary(contentsOf: plist) as? [String: Any]
-            if let id = info?["CFBundleIdentifier"] as? String, ids.contains(id.lowercased()) {
-                return url
-            }
+            if accepts(url) { return url }
         }
         return nil
     }
@@ -396,6 +424,25 @@ enum EmulatorInstaller {
             try? fm.removeItem(at: aside)
         }
         // Finder and Launch Services catch up with the new bundle.
+        LSRegisterURL(destination as CFURL, true)
+        return destination
+    }
+
+    /// Copies `fresh` into `folder`, for an emulator that was not there.
+    /// Something already carrying that name is left alone: it is not ours.
+    private static func place(_ fresh: URL, in folder: URL) throws -> URL {
+        let fm = FileManager.default
+        let destination = folder.appendingPathComponent(fresh.lastPathComponent)
+        if fm.fileExists(atPath: destination.path) {
+            throw Failure(message: "« \(destination.lastPathComponent) » existe déjà dans \(folder.path).")
+        }
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        do {
+            try check(Shell.run("/usr/bin/ditto", [fresh.path, destination.path]), "ditto")
+        } catch {
+            try? fm.removeItem(at: destination)
+            throw error
+        }
         LSRegisterURL(destination as CFURL, true)
         return destination
     }

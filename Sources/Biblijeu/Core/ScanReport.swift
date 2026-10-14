@@ -177,23 +177,31 @@ extension ScanReport {
     /// `Biblijeu --install <émulateur> [app]` installs the newest build the way
     /// the button does. With an app path, that copy is the one replaced --
     /// the way to try an install on a duplicate before trusting it with the
-    /// real thing.
+    /// real thing. An emulator that is not installed is installed afresh, into
+    /// /Applications or into the folder given instead of an app.
     static func runInstall() {
         let args = CommandLine.arguments
         guard let index = args.firstIndex(of: "--install"), index + 1 < args.count else {
-            print("Usage : Biblijeu --install <id> [chemin de l'app]"); exit(2)
+            print("Usage : Biblijeu --install <id> [chemin de l'app ou dossier]"); exit(2)
         }
         let id = args[index + 1]
+        let given = index + 2 < args.count
+            ? URL(fileURLWithPath: (args[index + 2] as NSString).expandingTildeInPath) : nil
         let target: InstalledEmulator?
-        if index + 2 < args.count {
-            let url = URL(fileURLWithPath: (args[index + 2] as NSString).expandingTildeInPath)
-            target = ApplicationScanner.emulator(at: url)
+        if let given, given.pathExtension.lowercased() == "app" {
+            target = ApplicationScanner.emulator(at: given)
         } else {
             let appFolders = ["/Applications",
                               FileManager.default.homeDirectoryForCurrentUser
                                   .appendingPathComponent("Applications").path]
                 .map { URL(fileURLWithPath: $0) }
-            target = ApplicationScanner.installedEmulators(in: appFolders).first { $0.id == id }
+            target = given == nil
+                ? ApplicationScanner.installedEmulators(in: appFolders).first { $0.id == id }
+                : nil
+        }
+        if target == nil, given?.pathExtension.lowercased() != "app",
+           let spec = EmulatorCatalog.byID[id] {
+            runInstallNew(spec, into: given ?? URL(fileURLWithPath: "/Applications"))
         }
         guard let emulator = target, emulator.id == id else {
             print("« \(id) » introuvable."); exit(1)
@@ -212,12 +220,35 @@ extension ScanReport {
                 return .failure(error)
             }
         }
+        reportInstall(outcome)
+    }
+
+    private static func runInstallNew(_ spec: EmulatorSpec, into folder: URL) -> Never {
+        let outcome: Result<URL, Error> = runBlocking {
+            guard let build = await UpdateChecker.latestBuild(for: spec),
+                  let link = build.download.flatMap(URL.init(string:)) else {
+                return .failure(EmulatorInstaller.Failure(message: "Aucun fichier macOS reconnu."))
+            }
+            print("\(spec.name) (non installé) → \(build.version)\n  \(link)")
+            do {
+                return .success(try await EmulatorInstaller.installNew(spec, into: folder, from: link) {
+                    print("  \($0)")
+                })
+            } catch {
+                return .failure(error)
+            }
+        }
+        reportInstall(outcome)
+    }
+
+    private static func reportInstall(_ outcome: Result<URL, Error>) -> Never {
         switch outcome {
         case .success(let app):
             // The cache still holds the replaced bundle's Info.plist.
             ApplicationScanner.clearCache()
             let version = ApplicationScanner.bundleInfo(at: app)["CFBundleShortVersionString"] as? String
-            print("✓ Installé : \(app.path) (\(version ?? "?"))"); exit(0)
+            let signed = AppSigner.isSignatureValid(app) ? "signature valide" : "signature invalide"
+            print("✓ Installé : \(app.path) (\(version ?? "?"), \(signed))"); exit(0)
         case .failure(let error):
             print("✗ \(error.localizedDescription)"); exit(1)
         }

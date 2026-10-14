@@ -501,6 +501,83 @@ final class LibraryModel: ObservableObject {
         if installedAny { rescan() }
     }
 
+    // MARK: - Installing emulators this Mac does not have
+
+    /// The catalogue's emulators missing from this Mac that Biblijeu could
+    /// fetch: the ones whose project publishes its builds.
+    var missingEmulators: [EmulatorSpec] {
+        let installed = Set(installedEmulators.map(\.id))
+        return EmulatorCatalog.all
+            .filter { $0.updates != nil && !installed.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Where a new emulator goes: the first application folder that can take
+    /// it -- /Applications unless the user put another first -- so the next
+    /// scan finds it.
+    private var installFolder: URL? {
+        let fm = FileManager.default
+        return settings.applicationFolders.first { fm.isWritableFile(atPath: $0) }
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    /// Downloads, installs and signs an emulator this Mac does not have.
+    func installMissing(_ spec: EmulatorSpec) {
+        Task { await self.installNew(spec) }
+    }
+
+    private func installNew(_ spec: EmulatorSpec) async {
+        let id = spec.id
+        emulatorProblems[id] = nil
+        emulatorNotes[id] = nil
+        guard !isInstalling else {
+            emulatorProblems[id] = "Une autre installation est en cours : réessayez ensuite."
+            return
+        }
+        guard let folder = installFolder else {
+            emulatorProblems[id] = "Aucun dossier d'applications où écrire : ajoutez-en un dans les réglages."
+            return
+        }
+        isInstalling = true
+        defer { isInstalling = false }
+        emulatorActivity[id] = "Recherche du fichier…"
+
+        guard let build = await UpdateChecker.latestBuild(for: spec),
+              let link = build.download.flatMap(URL.init(string:)) else {
+            emulatorActivity[id] = nil
+            emulatorProblems[id] = "Aucun fichier macOS reconnu dans la dernière version : passez par la page du projet."
+            return
+        }
+
+        do {
+            let app = try await Task.detached(priority: .userInitiated) {
+                try await EmulatorInstaller.installNew(spec, into: folder, from: link) { status in
+                    Task { @MainActor in self.emulatorActivity[id] = status }
+                }
+            }.value
+            SignatureLedger.note(app)
+
+            // What the project just answered is the build now installed: kept,
+            // so the row lands among « À jour » rather than unanswered.
+            ApplicationScanner.clearCache()
+            if let emulator = ApplicationScanner.emulator(at: app), emulator.id == id,
+               let answer = UpdateChecker.answer(for: emulator, build: build) {
+                emulatorUpdates[id] = answer
+                if var report = UpdateChecker.cached() {
+                    report.updates[id] = answer
+                    report.stale?.remove(id)
+                    UpdateChecker.save(report)
+                }
+            }
+            emulatorNotes[id] = "Version \(build.version) installée dans \(folder.path) et vérifiée."
+            emulatorActivity[id] = nil
+            rescan()
+        } catch {
+            emulatorActivity[id] = nil
+            emulatorProblems[id] = error.localizedDescription
+        }
+    }
+
     /// Signs one emulator again, at the user's request.
     func signEmulator(_ emulator: InstalledEmulator) {
         let id = emulator.id

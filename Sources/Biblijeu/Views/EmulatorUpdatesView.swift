@@ -51,6 +51,12 @@ struct EmulatorUpdatesView: View {
                     ForEach(rest) { row($0, tint: .secondary, symbol: "questionmark.circle") }
                 }
             }
+            let missing = model.missingEmulators
+            if !missing.isEmpty {
+                Section("Non installés") {
+                    ForEach(missing) { missingRow($0) }
+                }
+            }
         }
         .listStyle(.inset)
         .scrollContentBackground(.hidden)
@@ -185,6 +191,54 @@ struct EmulatorUpdatesView: View {
             }
             Button("Afficher dans le Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([row.emulator.url])
+            }
+        }
+    }
+
+    /// An emulator of the catalogue this Mac does not have, which Biblijeu
+    /// can fetch from its project, install and sign.
+    private func missingRow(_ spec: EmulatorSpec) -> some View {
+        let activity = model.emulatorActivity[spec.id]
+        let problem = model.emulatorProblems[spec.id]
+        let page = spec.homepage.flatMap(URL.init(string:))
+            ?? spec.updates.flatMap { URL(string: $0.page) }
+        let consoles = spec.systems.compactMap { SystemCatalog.system($0)?.name }
+
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.down.app").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(spec.name).foregroundStyle(.primary)
+                Text(consoles.count > 4
+                     ? consoles.prefix(4).joined(separator: ", ") + "…"
+                     : consoles.joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let activity {
+                    Text(activity).font(.caption).foregroundStyle(Theme.accentWarm)
+                } else if let problem {
+                    Label(problem, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+            if activity != nil {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Installer") { model.installMissing(spec) }
+                    .controlSize(.small)
+                    .disabled(!model.emulatorActivity.isEmpty)
+                    .help("Télécharger la dernière version de \(spec.name), l'installer et la signer")
+            }
+            if let page {
+                Link(destination: page) {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Ouvrir \(page.host ?? "la page du projet")")
             }
         }
     }
