@@ -122,6 +122,9 @@ final class LibraryModel: ObservableObject {
     private let settings = AppSettings.shared
     private let play = PlayStore.shared
     private let watcher = FolderWatcher()
+    /// The Steam games the last scan saw, to tell an installed game from
+    /// Steam merely writing to its library.
+    private var steamGameIDs = Set<UInt64>()
     private var cancellables = Set<AnyCancellable>()
     private var artworkTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
@@ -261,6 +264,13 @@ final class LibraryModel: ObservableObject {
             let shortcuts = CrossOver.shortcuts(in: bottles)
             scanned = CrossOver.merge(shortcuts, into: scanned)
 
+            // A game Steam installed is started by Steam, which knows which
+            // compatibility tool -- CrossOver through NotProton -- runs it.
+            let steamGames = Steam.installedGames()
+            let steamShortcuts = Steam.shortcuts()
+            scanned = Steam.merge(steamGames, into: scanned)
+            scanned = Steam.merge(steamShortcuts, into: scanned)
+
             if scanApps {
                 scanned.append(contentsOf: ApplicationScanner.scan(folders: appRoots, progress: report))
             }
@@ -270,6 +280,7 @@ final class LibraryModel: ObservableObject {
             await MainActor.run {
                 self.crossOverBottles = bottles
                 self.crossOverShortcuts = shortcuts
+                self.steamGameIDs = Set(steamGames.map { UInt64($0.appID) } + steamShortcuts.map(\.gameID))
                 self.apply(items: found, emulators: emulators)
             }
         }
@@ -777,8 +788,22 @@ final class LibraryModel: ObservableObject {
         // way a ROM copied into a folder does.
         let paths = settings.romFolders.filter { FileManager.default.fileExists(atPath: $0) }
             + CrossOver.watchPaths(for: crossOverBottles)
-        watcher.start(paths: paths) { [weak self] in
-            Task { @MainActor in self?.rescan() }
+        // Steam writes to its libraries all the time -- a download lands in
+        // the game's folder file by file, manifests are rewritten every few
+        // seconds -- so a change there, even inside a ROM folder, only counts
+        // when it adds or removes a game.
+        let steam = Steam.watchPaths()
+        func isUnder(_ path: String, _ roots: [String]) -> Bool {
+            roots.contains { path == $0 || path.hasPrefix($0 + "/") }
+        }
+        watcher.start(paths: paths + steam) { [weak self] changed in
+            let inLibrary = changed.contains { isUnder($0, paths) && !isUnder($0, steam) }
+            Task { @MainActor in
+                guard let self else { return }
+                if inLibrary || Steam.knownGameIDs() != self.steamGameIDs {
+                    self.rescan()
+                }
+            }
         }
     }
 
@@ -1007,6 +1032,12 @@ final class LibraryModel: ObservableObject {
 
     private func launch(_ item: GameItem, using emulator: InstalledEmulator?,
                         disc: URL?, resume: ResumeRequest) {
+        if let bottle = steamBottle(for: item) {
+            CrossOver.run(item.url, in: bottle, name: item.title) { [weak self] error in
+                self?.finish(item, error: error)
+            }
+            return
+        }
         if let emulator, emulator.spec.id == "crossover", item.kind == .rom {
             launchInBottle(item, using: emulator, disc: disc)
             return
@@ -1064,6 +1095,21 @@ final class LibraryModel: ObservableObject {
 
     // MARK: - CrossOver
 
+    /// True for a Steam game that could also run in a bottle: one whose
+    /// tile is the Windows program itself, not just the folder Steam made.
+    func canRunSteamGameInBottle(_ item: GameItem) -> Bool {
+        item.steamGameID != nil
+            && ["exe", "bat", "msi"].contains(item.url.pathExtension.lowercased())
+    }
+
+    /// The bottle the user picked for a Steam game instead of Steam, if any.
+    /// Steam is the default: it knows which compatibility tool runs the game.
+    func steamBottle(for item: GameItem) -> CrossOverBottle? {
+        guard canRunSteamGameInBottle(item),
+              let chosen = play.state(for: item.id).crossOverBottle else { return nil }
+        return crossOverBottles.first { $0.name == chosen }
+    }
+
     /// Where a Windows game should run, and the start-menu entry to use for it.
     ///
     /// The bottle the user named wins; failing that, the entry CrossOver made
@@ -1098,6 +1144,9 @@ final class LibraryModel: ObservableObject {
     /// The command line "Copier la commande de lancement" hands over, and the
     /// one the info panel shows.
     func commandPreview(for item: GameItem) -> String? {
+        if let bottle = steamBottle(for: item) {
+            return CrossOver.commandPreview(for: item.url, in: bottle)
+        }
         let emulator = emulator(for: item)
         if let emulator, emulator.spec.id == "crossover", item.kind == .rom,
            let plan = crossOverPlan(for: item) {

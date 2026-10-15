@@ -24,6 +24,7 @@ struct DetailView: View {
                 launchControls
                 if item.isMultiDisc { discList }
                 emulatorSection
+                steamSection
                 resumeSection
                 fileSection
                 artworkSection
@@ -262,6 +263,42 @@ struct DetailView: View {
                             .lineLimit(4)
                             .truncationMode(.middle)
                     }
+                }
+            }
+        }
+    }
+
+    /// How a game Steam knows is started: through Steam by default, which
+    /// applies the compatibility tool picked there, or in a CrossOver bottle.
+    @ViewBuilder
+    private var steamSection: some View {
+        if item.steamGameID != nil {
+            section("Lancement") {
+                if model.canRunSteamGameInBottle(item), !model.crossOverBottles.isEmpty {
+                    Picker("", selection: Binding(
+                        get: { state.crossOverBottle ?? "" },
+                        set: { play.setCrossOverBottle($0.isEmpty ? nil : $0, for: item.id) })
+                    ) {
+                        Text("Via Steam").tag("")
+                        ForEach(model.crossOverBottles) { bottle in
+                            Text("Bouteille « \(bottle.name) »").tag(bottle.name)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                } else {
+                    Text("Via Steam, avec l'outil de compatibilité choisi dans ses propriétés.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+
+                if let command = model.commandPreview(for: item) {
+                    Text(command)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                        .lineLimit(4)
+                        .truncationMode(.middle)
                 }
             }
         }

@@ -49,7 +49,9 @@ enum Launcher {
 
         // A native game or an emulator: just open it.
         guard item.kind == .rom else {
-            if item.url.pathExtension.lowercased() == "app" {
+            if let gameID = item.steamGameID {
+                Steam.launch(gameID: gameID, name: item.title, completion: completion)
+            } else if item.url.pathExtension.lowercased() == "app" {
                 open(app: item.url, arguments: [], completion: completion)
             } else if CrossOver.isShortcutStub(item.url) {
                 // A start-menu entry of a bottle: a program to run, not a
@@ -182,6 +184,7 @@ enum Launcher {
     static func commandPreview(for item: GameItem, emulator: InstalledEmulator?, direct: Bool,
                                disc: URL? = nil, resume: ResumeRequest = .fromStart) -> String? {
         guard item.kind == .rom else {
+            if let gameID = item.steamGameID { return Steam.commandPreview(gameID: gameID) }
             if CrossOver.isShortcutStub(item.url) { return quoted(item.url.path) }
             return "open \(quoted(item.url.path))"
         }

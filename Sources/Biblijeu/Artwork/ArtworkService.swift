@@ -27,7 +27,9 @@ enum ArtworkService {
         // Windows game, which beats the generic launcher icon by a mile.
         if let local = item.localArtwork { return .file(local) }
         // An installed app already has a perfectly good icon.
-        if item.kind != .rom { return .appIcon(item.url) }
+        // A Steam game started from its folder or its .exe has no icon worth
+        // showing -- a folder, a blank program -- so it waits for a cover.
+        if item.kind != .rom && item.steamGameID == nil { return .appIcon(item.url) }
         return .none
     }
 
@@ -35,7 +37,8 @@ enum ArtworkService {
     /// lookup already came back empty. This is what "search the missing covers"
     /// means when the user asks for it by hand.
     static func hasNoCover(_ item: GameItem) -> Bool {
-        guard item.kind == .rom else { return false }
+        guard item.kind == .rom || item.steamGameID != nil else { return false }
+        if item.localArtwork != nil { return false }
         let state = PlayStore.shared.state(for: item.id)
         if state.customArtworkPath != nil { return false }
         if let url = state.artworkURL, !url.isEmpty { return false }

@@ -48,6 +48,9 @@ struct GameItem: Identifiable, Hashable {
     /// A picture the scan already found for this game, before any lookup:
     /// CrossOver keeps one for every start-menu entry it makes.
     var localArtwork: URL?
+    /// Set for a game the Steam client installed: Steam starts it, through
+    /// the compatibility tool picked for it when it is a Windows game.
+    var steamGameID: UInt64?
 
     var system: GameSystem? { SystemCatalog.system(systemID) }
 
