@@ -412,7 +412,9 @@ struct DetailView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            if item.kind == .rom {
+            // A game shelved by hand too: an app can wrap a Windows or DOS
+            // game as well as be a native one.
+            if item.kind.belongsToSystem {
                 Picker("Console", selection: Binding(
                     get: { item.systemID },
                     set: { model.setSystem($0 == model.scannedSystemID(for: item) ? nil : $0, for: item) })

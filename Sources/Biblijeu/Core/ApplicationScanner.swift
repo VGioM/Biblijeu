@@ -17,7 +17,7 @@ enum ApplicationScanner {
         "com.riotgames.leagueoflegends", "com.riotgames.legendsofruneterra",
         "com.itch.itch", "io.github.hyperplay", "com.heroicgameslauncher.hgl",
         "com.playstation.remoteplay", "com.nvidia.gfnpc",
-        "com.paradoxinteractive.heartsofiron4"
+        "com.paradoxinteractive.heartsofiron4", "gg.whitemane.launcher"
     ]
 
     private static let gameNameHints = [

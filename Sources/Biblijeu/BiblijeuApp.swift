@@ -23,6 +23,8 @@ struct BiblijeuApp: App {
             CommandGroup(after: .newItem) {
                 Button("Ajouter un dossier de ROM…") { model.addRomFolder() }
                     .keyboardShortcut("o", modifiers: .command)
+                Button("Ajouter une application…") { model.addApplication() }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Analyser à nouveau") { model.rescan() }
                     .keyboardShortcut("r", modifiers: .command)
             }

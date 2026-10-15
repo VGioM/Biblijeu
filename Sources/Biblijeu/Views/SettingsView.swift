@@ -85,6 +85,32 @@ private struct SourcesSettings: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Applications ajoutées à la main") {
+                ForEach(settings.manualApplications, id: \.self) { path in
+                    HStack {
+                        Image(systemName: FileManager.default.fileExists(atPath: path)
+                              ? "app" : "externaldrive.badge.xmark")
+                            .foregroundStyle(.secondary)
+                        Text((path as NSString).abbreviatingWithTildeInPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(path)
+                        Spacer()
+                        Button {
+                            model.removeManualApplication(path)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                Button("Ajouter une application…") { model.addApplication() }
+                Text("Pour un jeu ou un lanceur que l'analyse ne reconnaît pas : il apparaît dans « Jeux installés », où qu'il soit.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Lancement") {
                 Toggle("Lancement direct (plein écran, sans interface)", isOn: $settings.directLaunch)
                 Text("Quand c'est possible, l'émulateur démarre directement sur le jeu. Décochez pour ouvrir l'émulateur normalement.")

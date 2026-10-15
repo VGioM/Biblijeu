@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import UniformTypeIdentifiers
 
 /// Where the sidebar can point.
 enum LibrarySection: Hashable, Identifiable {
@@ -219,6 +220,59 @@ final class LibraryModel: ObservableObject {
         rescan()
     }
 
+    /// An app the scan does not take for a game -- a launcher that declares no
+    /// category, say -- added to the library by hand.
+    func addApplication() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = "Ajouter"
+        panel.message = "Choisissez les applications à ajouter à la bibliothèque comme jeux."
+
+        // Which shelf they go on: a Windows game wrapped in an app belongs
+        // under "Jeu Windows", not "Jeu macOS".
+        let shelf = NSPopUpButton(frame: .zero, pullsDown: false)
+        let systems = SystemCatalog.all.sorted { lhs, rhs in
+            let order = ["mac", "windows"]
+            let l = order.firstIndex(of: lhs.id) ?? order.count
+            let r = order.firstIndex(of: rhs.id) ?? order.count
+            return l != r ? l < r : lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+        for system in systems {
+            shelf.addItem(withTitle: system.name)
+            shelf.lastItem?.representedObject = system.id
+        }
+        let label = NSTextField(labelWithString: "Ranger dans :")
+        let row = NSStackView(views: [label, shelf])
+        row.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+        row.frame.size = row.fittingSize
+        panel.accessoryView = row
+        panel.isAccessoryViewDisclosed = true
+
+        guard panel.runModal() == .OK else { return }
+        let systemID = shelf.selectedItem?.representedObject as? String ?? "mac"
+        var apps = settings.manualApplications
+        for url in panel.urls {
+            if !apps.contains(url.path) { apps.append(url.path) }
+            // "mac" is what the scan gives an app already: no override needed.
+            play.setSystem(systemID == "mac" ? nil : systemID, for: GameItem.identifier(for: url))
+        }
+        settings.manualApplications = apps
+        rescan()
+    }
+
+    func isManualApplication(_ item: GameItem) -> Bool {
+        settings.manualApplications.contains(item.url.path)
+    }
+
+    func removeManualApplication(_ path: String) {
+        settings.manualApplications.removeAll { $0 == path }
+        rescan()
+    }
+
     // MARK: - Scanning
 
     func rescanIfNeeded() {
@@ -247,6 +301,7 @@ final class LibraryModel: ObservableObject {
         let romRoots = romFolders
         let appRoots = applicationFolders
         let scanApps = settings.scanApplications
+        let manualApps = settings.manualApplications.map { URL(fileURLWithPath: $0) }
 
         Task.detached(priority: .userInitiated) {
             ApplicationScanner.clearCache()
@@ -274,6 +329,12 @@ final class LibraryModel: ObservableObject {
             if scanApps {
                 scanned.append(contentsOf: ApplicationScanner.scan(folders: appRoots, progress: report))
             }
+            // Added by hand: a game whatever the app says of itself. Placed
+            // first so it wins over the same bundle found by the scan.
+            let manual = manualApps
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+                .compactMap { ApplicationScanner.item(for: $0, forcedKind: .game) }
+            scanned.insert(contentsOf: manual, at: 0)
             let found = scanned
             let emulators = ApplicationScanner.installedEmulators(in: appRoots)
 

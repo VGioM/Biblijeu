@@ -114,6 +114,7 @@ struct RootView: View {
                     .disabled(model.items.isEmpty)
                 Divider()
                 Button("Ajouter un dossier de ROM…") { model.addRomFolder() }
+                Button("Ajouter une application…") { model.addApplication() }
             } label: {
                 Label("Options", systemImage: "ellipsis.circle")
             }

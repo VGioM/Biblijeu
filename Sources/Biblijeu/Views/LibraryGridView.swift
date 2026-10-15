@@ -230,6 +230,9 @@ struct LibraryGridView: View {
             PlayStore.shared.toggleFavorite(item.id)
         }
         Button("Masquer") { PlayStore.shared.setHidden(true, for: item.id) }
+        if model.isManualApplication(item) {
+            Button("Retirer de la bibliothèque") { model.removeManualApplication(item.url.path) }
+        }
 
         Divider()
 

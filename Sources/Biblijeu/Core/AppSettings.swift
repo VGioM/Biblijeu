@@ -14,6 +14,11 @@ final class AppSettings: ObservableObject {
     @Published var applicationFolders: [String] {
         didSet { defaults.set(applicationFolders, forKey: Keys.appFolders) }
     }
+    /// Apps the user added one by one, because the scan does not take them
+    /// for games. Always listed as games, wherever they live.
+    @Published var manualApplications: [String] {
+        didSet { defaults.set(manualApplications, forKey: Keys.manualApps) }
+    }
     @Published var scanApplications: Bool {
         didSet { defaults.set(scanApplications, forKey: Keys.scanApps) }
     }
@@ -105,6 +110,7 @@ final class AppSettings: ObservableObject {
         static let romFolders = "romFolders"
         static let appFolders = "applicationFolders"
         static let scanApps = "scanApplications"
+        static let manualApps = "manualApplications"
         static let directLaunch = "directLaunch"
         static let resumeOnLaunch = "resumeOnLaunch"
         static let autoArtwork = "autoFetchArtwork"
@@ -151,6 +157,7 @@ final class AppSettings: ObservableObject {
         romFolders = defaults.stringArray(forKey: Keys.romFolders) ?? []
         applicationFolders = defaults.stringArray(forKey: Keys.appFolders)
             ?? ["/Applications", "\(home)/Applications"]
+        manualApplications = defaults.stringArray(forKey: Keys.manualApps) ?? []
         scanApplications = defaults.bool(forKey: Keys.scanApps)
         directLaunch = defaults.bool(forKey: Keys.directLaunch)
         resumeOnLaunch = defaults.bool(forKey: Keys.resumeOnLaunch)
