@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Biblijeu.app into ./dist and ad-hoc signs it.
+# Builds Biblijeu.app into ./dist and signs it.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -68,8 +68,17 @@ elif [ "$ICON_BUILT" = "0" ]; then
     echo "  (aucune icône)"
 fi
 
-echo "▸ Signature…"
-codesign --force --sign - "$APP/Contents/MacOS/Biblijeu" 2>/dev/null
-codesign --force --sign - "$APP" 2>/dev/null
+# Signed with the local certificate when there is one (./signing-cert.sh makes
+# it): macOS then keeps its permissions -- Documents and the rest -- from one
+# build to the next. Ad hoc otherwise, which it takes for a new app each time.
+IDENTITY="-"
+if security find-identity -p codesigning 2>/dev/null | grep -q "Biblijeu Local Signing"; then
+    IDENTITY="Biblijeu Local Signing"
+    echo "▸ Signature (certificat local)…"
+else
+    echo "▸ Signature ad hoc (lancez ./signing-cert.sh pour que macOS garde ses autorisations)…"
+fi
+codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/Biblijeu"
+codesign --force --sign "$IDENTITY" "$APP"
 
 echo "✓ $APP prêt"
