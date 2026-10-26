@@ -300,6 +300,7 @@ enum UpdateChecker {
         /// The tagged commit's date -- when the build started rather than when
         /// its files finished uploading.
         let createdAt: Date?
+        let prerelease: Bool?
         let assets: [Asset]?
 
         struct Asset: Decodable {
@@ -318,6 +319,7 @@ enum UpdateChecker {
             case htmlURL = "html_url"
             case publishedAt = "published_at"
             case createdAt = "created_at"
+            case prerelease
             case assets
         }
 
@@ -335,7 +337,7 @@ enum UpdateChecker {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
-        let release: GitHubRelease
+        var release: GitHubRelease?
         do {
             let stable = try await HTTP.data(
                 from: URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!,
@@ -346,30 +348,51 @@ enum UpdateChecker {
             // project ships nightlies only, and its newest build of any kind is
             // the honest answer. Any other refusal -- 403 when the hourly
             // allowance is spent above all -- is not worth a second request.
-            //
-            // The list comes back ordered by the tagged commit, which for a
-            // project that builds its nightlies from a queue is not the order
-            // they went up in: KytyPS5 has handed back 07:00, 11:19 and 08:37
-            // in that order. Asking for one and keeping it would pick a build
-            // half a day old, so a handful are asked for and the newest kept.
-            let any = try await HTTP.data(
-                from: URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=10")!,
-                headers: headers)
-            let recent = try decoder.decode([GitHubRelease].self, from: any)
-            guard let newest = recent.max(by: {
-                ($0.publishedAt ?? .distantPast) < ($1.publishedAt ?? .distantPast)
-            }) else {
-                throw URLError(.resourceUnavailable)
-            }
-            release = newest
         }
+        if let release, macDownload(in: release) != nil { return build(from: release) }
+
+        // Either there is no stable release, or the newest one has nothing for
+        // a Mac: KytyPS5 stopped attaching its macOS zip on 24 October while
+        // still putting out a Windows build every few hours. A build that
+        // cannot be installed here is not an update for this Mac, so the
+        // newest one that can is looked for among the recent ones. Projects
+        // with a stable release only ever look among their stable ones.
+        //
+        // The list comes back ordered by the tagged commit, which for a
+        // project that builds its nightlies from a queue is not the order
+        // they went up in: KytyPS5 has handed back 07:00, 11:19 and 08:37
+        // in that order. Asking for one and keeping it would pick a build
+        // half a day old, so a handful are asked for and the newest kept.
+        let any = try await HTTP.data(
+            from: URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=30")!,
+            headers: headers)
+        let recent = try decoder.decode([GitHubRelease].self, from: any)
+            .filter { release == nil || $0.prerelease != true }
+        let byDate: (GitHubRelease, GitHubRelease) -> Bool = {
+            ($0.publishedAt ?? .distantPast) < ($1.publishedAt ?? .distantPast)
+        }
+        if let installable = recent.filter({ macDownload(in: $0) != nil }).max(by: byDate) {
+            return build(from: installable)
+        }
+        // Nothing for a Mac anywhere: still say what the newest build is, so
+        // its row is not left blank.
+        guard let newest = release ?? recent.max(by: byDate) else {
+            throw URLError(.resourceUnavailable)
+        }
+        return build(from: newest)
+    }
+
+    private static func macDownload(in release: GitHubRelease) -> String? {
         let assets = release.assets ?? []
-        let chosen = macAsset(among: assets.map(\.name)).flatMap { name in
+        return macAsset(among: assets.map(\.name)).flatMap { name in
             assets.first { $0.name == name }?.url
         }
-        return Build(version: release.version, page: release.htmlURL,
-                     published: release.publishedAt, tagged: release.createdAt,
-                     download: chosen)
+    }
+
+    private static func build(from release: GitHubRelease) -> Build {
+        Build(version: release.version, page: release.htmlURL,
+              published: release.publishedAt, tagged: release.createdAt,
+              download: macDownload(in: release))
     }
 
     private struct DolphinBuild: Decodable {
