@@ -56,7 +56,14 @@ enum SaveKind: String, Codable, CaseIterable, Sendable {
 
 /// A setting inside an emulator's own configuration that names a folder.
 struct FolderSetting: Sendable {
-    enum Format: Sendable { case ini, bml }
+    enum Format: Sendable {
+        case ini, bml
+        /// A property list whose `key` is a bookmark to the emulator's data
+        /// folder, the saves being `subpath` inside it. `section`, when set,
+        /// is a boolean key that turns the folder off while true -- Astris's
+        /// "use the default folder".
+        case plistBookmark(subpath: String)
+    }
 
     /// The configuration file, relative to the home folder.
     let file: String
@@ -192,9 +199,16 @@ enum SaveCatalog {
             SaveFolderSpec(.sdCard, ["Library/Application Support/Ryujinx/sdcard"])
         ],
 
+        // Astris is Ryujinx underneath, and lets its data folder be anywhere:
+        // a folder picked in its settings is a bookmark in its (sandboxed)
+        // preferences, and the saves are then Ryujinx's `bis/user/save`, with
+        // the index that says which game each one is beside it.
         "astris": [
             SaveFolderSpec(.saves, ["Library/Application Support/Astris/nand/user/save",
-                                    "Library/Containers/V380-Ori.Astris/Data/Library/Application Support/Astris/nand/user/save"])
+                                    "Library/Containers/V380-Ori.Astris/Data/Library/Application Support/Astris/nand/user/save"],
+                           setting: astrisDataFolder("bis/user/save")),
+            SaveFolderSpec(.saves, [], slug: "saveMeta", label: "Index des sauvegardes",
+                           setting: astrisDataFolder("bis/user/saveMeta"))
         ],
 
         "sudachi": [
@@ -493,6 +507,13 @@ enum SaveCatalog {
         return String(format: "%04x", hash & 0xFFFF)
     }
 
+    /// Where Astris's own settings put a folder of its data.
+    private static func astrisDataFolder(_ subpath: String) -> FolderSetting {
+        FolderSetting(file: "Library/Containers/V380-Ori.Astris/Data/Library/Preferences/V380-Ori.Astris.plist",
+                      format: .plistBookmark(subpath: subpath), section: "UseDefaultRyujinxDir",
+                      key: "RyujinxBaseDirBookmark", relativeTo: "")
+    }
+
     /// The users Windows invents. A bottle's saves are never in these.
     private static let windowsPseudoUsers: Set<String> = ["Public", "Default", "Default User", "All Users"]
 
@@ -595,6 +616,16 @@ enum SaveCatalog {
         switch setting.format {
         case .ini: return ConfigFile.iniValue(setting.key, section: setting.section, in: file)
         case .bml: return ConfigFile.bmlValue(setting.key, section: setting.section, in: file)
+        case .plistBookmark(let subpath):
+            guard let plist = NSDictionary(contentsOf: file),
+                  !setting.section.isEmpty ? (plist[setting.section] as? Bool) != true : true,
+                  let bookmark = plist[setting.key] as? Data,
+                  // Read without resolving: resolving a sandboxed app's
+                  // security-scoped bookmark from outside it can fail, and the
+                  // path it was made from is all that is needed.
+                  let path = URL.resourceValues(forKeys: [.pathKey], fromBookmarkData: bookmark)?.path
+            else { return nil }
+            return URL(fileURLWithPath: path).appendingPathComponent(subpath).path
         }
     }
 
