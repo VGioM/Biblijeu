@@ -348,7 +348,7 @@ struct BackupsView: View {
                 // The two ends of this emulator's backup, side by side: where
                 // the saves live now, and where their copies are on the drive.
                 Button("Ouvrir l'original") {
-                    Launcher.reveal(group.folders.map(\.folder.url))
+                    Launcher.reveal(group.folders.filter { !$0.folder.onlyInBackup }.map(\.folder.url))
                 }
                 if let folder = backups.backupFolder(forEmulator: group.emulatorID) {
                     Button("Ouvrir la copie") { Launcher.reveal(folder) }
@@ -423,7 +423,7 @@ struct BackupsView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            reveal(state.folder.url, symbol: "arrow.up.forward.app",
+            reveal(state.folder.onlyInBackup ? nil : state.folder.url, symbol: "arrow.up.forward.app",
                    help: "Afficher le dossier d'origine dans le Finder")
             reveal(backups.backupFolder(for: state.folder), symbol: "externaldrive",
                    help: "Afficher la copie sur le disque de sauvegarde")
@@ -453,7 +453,9 @@ struct BackupsView: View {
 
     private func detail(for state: FolderState) -> String {
         let size = BackupEngine.size(state.bytes)
-        var text = "\(state.files) fichier\(state.files > 1 ? "s" : "") — \(size)"
+        var text = state.folder.onlyInBackup
+            ? "Pas encore sur ce Mac"
+            : "\(state.files) fichier\(state.files > 1 ? "s" : "") — \(size)"
         if !backups.isIncluded(state.folder.kind) {
             text += " — non copié (\(state.folder.kind.label) décoché)"
         }

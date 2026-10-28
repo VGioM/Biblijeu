@@ -315,14 +315,14 @@ extension ScanReport {
             print("Dossiers de sauvegarde\n")
         }
         for id in SaveCatalog.knownEmulatorIDs.sorted() {
-            let name = EmulatorCatalog.byID[id]?.name ?? id
+            let name = SaveCatalog.standaloneNames[id] ?? EmulatorCatalog.byID[id]?.name ?? id
             let folders = SaveCatalog.folders(forEmulator: id)
             guard !folders.isEmpty else {
                 silent.append(name + (installed.contains(id) ? " (installé)" : ""))
                 continue
             }
             found += 1
-            print("  \(name)\(installed.contains(id) ? "" : "  — émulateur absent")")
+            print("  \(name)\(installed.contains(id) || SaveCatalog.standaloneNames[id] != nil ? "" : "  — émulateur absent")")
             for folder in folders {
                 let measured = BackupEngine.measure(folder.url, filter: folder.filter)
                 totalFiles += measured.files

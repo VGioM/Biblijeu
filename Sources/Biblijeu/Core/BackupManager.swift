@@ -244,8 +244,8 @@ final class BackupManager: ObservableObject {
         let ids = Set(SaveCatalog.knownEmulatorIDs)
         let names = installed
         let romFolders = settings.romFolders
-        let manifestURL = isDestinationAvailable
-            ? root?.appendingPathComponent(BackupManifest.fileName) : nil
+        let backupRoot = isDestinationAvailable ? root : nil
+        let manifestURL = backupRoot?.appendingPathComponent(BackupManifest.fileName)
 
         groups = await Task.detached(priority: .utility) {
             let manifest = manifestURL.flatMap(Self.readManifest)
@@ -260,11 +260,18 @@ final class BackupManager: ObservableObject {
 
             var groups: [EmulatorSaves] = []
             for id in ids.sorted() {
-                let folders = SaveCatalog.folders(forEmulator: id)
+                var folders = SaveCatalog.folders(forEmulator: id)
+                // What the drive holds and this Mac has never made, so it can
+                // be restored -- the saves of a game not yet started here.
+                if let backupRoot {
+                    folders += SaveCatalog.folders(onlyInBackup: backupRoot, forEmulator: id,
+                                                   present: Set(folders.map(\.backupSubpath)))
+                }
                 guard !folders.isEmpty else { continue }
-                let name = names[id] ?? EmulatorCatalog.byID[id]?.name ?? id
+                let standalone = SaveCatalog.standaloneNames[id]
+                let name = names[id] ?? standalone ?? EmulatorCatalog.byID[id]?.name ?? id
                 groups.append(EmulatorSaves(emulatorID: id, name: name,
-                                            isInstalled: names[id] != nil,
+                                            isInstalled: names[id] != nil || standalone != nil,
                                             folders: measure(folders)))
             }
             groups.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -416,7 +423,7 @@ final class BackupManager: ObservableObject {
 
         for folder in folders {
             if Task.isCancelled { break }
-            let name = installed[folder.emulatorID]
+            let name = installed[folder.emulatorID] ?? SaveCatalog.standaloneNames[folder.emulatorID]
                 ?? EmulatorCatalog.byID[folder.emulatorID]?.name ?? folder.emulatorID
             progress = "\(direction.label) — \(name), \(folder.title)…"
 
@@ -558,6 +565,10 @@ final class BackupManager: ObservableObject {
         // Restoring from a folder that was never backed up would create an
         // empty one and report success; there is nothing to put back.
         if direction == .toEmulator, !FileManager.default.fileExists(atPath: backup.path) {
+            return FolderCopy(skipped: true)
+        }
+        // A folder known only from the backup has nothing here to copy yet.
+        if direction == .toBackup, folder.onlyInBackup {
             return FolderCopy(skipped: true)
         }
 

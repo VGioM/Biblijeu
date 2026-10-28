@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// What an emulator keeps in a folder.
@@ -99,10 +100,19 @@ struct SaveFolderSpec: Sendable {
     /// Folder names a wildcard must never match: Windows keeps "Public" and
     /// "Default" beside the real users, and they hold nobody's saves.
     var ignoring: Set<String>
+    /// True when a folder the backup holds can be put back on a Mac that has
+    /// never made it: the first candidate, its `*` replaced by the folder's
+    /// name in the backup, is exactly where it goes. Only for a path with one
+    /// `*` and no `?` -- a bottle's user cannot be guessed.
+    var restoresMissing: Bool
+    /// What to call one `*` folder on screen, when its name is an identifier
+    /// nobody reads: a Switch title ID rather than the game.
+    var describe: (@Sendable (String) -> String?)?
 
     init(_ kind: SaveKind, _ candidates: [String], slug: String? = nil,
          label: String? = nil, excluding: [String] = [], onlyExtensions: Set<String> = [],
-         ignoring: Set<String> = [], setting: FolderSetting? = nil) {
+         ignoring: Set<String> = [], setting: FolderSetting? = nil,
+         restoresMissing: Bool = false, describe: (@Sendable (String) -> String?)? = nil) {
         self.kind = kind
         self.candidates = candidates
         self.slug = slug
@@ -111,6 +121,8 @@ struct SaveFolderSpec: Sendable {
         self.onlyExtensions = onlyExtensions
         self.ignoring = ignoring
         self.setting = setting
+        self.restoresMissing = restoresMissing
+        self.describe = describe
     }
 }
 
@@ -128,6 +140,10 @@ struct SaveFolder: Identifiable, Hashable, Sendable {
     let variant: String
     /// What of this folder is a save, and what must be left where it is.
     let filter: BackupEngine.Filter
+    /// The variant as a person would name it, when it is an identifier.
+    var variantName: String? = nil
+    /// Not on this Mac yet, only in the backup: there to be restored.
+    var onlyInBackup = false
 
     var id: String { "\(emulatorID)/\(slug)/\(variant)" }
 
@@ -140,7 +156,7 @@ struct SaveFolder: Identifiable, Hashable, Sendable {
 
     var title: String {
         let name = label ?? kind.label
-        return variant.isEmpty ? name : "\(name) — \(variant)"
+        return variant.isEmpty ? name : "\(name) — \(variantName ?? variant)"
     }
 }
 
@@ -373,6 +389,15 @@ enum SaveCatalog {
                            ignoring: windowsPseudoUsers)
         ],
 
+        // Switch games turned into Mac apps by nxnative (Atelier NX, NX2Apple):
+        // one folder per title ID, and `save` is the committed save -- the
+        // game works in `save.work` and swaps it in, and the next launch
+        // discards a stale one, so `save` alone is the whole story.
+        "nxnative": [
+            SaveFolderSpec(.saves, ["Library/Application Support/nxnative/*/save"],
+                           restoresMissing: true, describe: nxnativeGameName)
+        ],
+
         "whisky": [
             SaveFolderSpec(.saves, ["Library/Containers/com.isaacmarovitz.Whisky/Bottles/*/drive_c/users/?/Saved Games"],
                            slug: "saved-games", label: "Jeux sauvegardés (Saved Games)",
@@ -474,6 +499,51 @@ enum SaveCatalog {
     /// Every emulator this catalogue knows a save folder for.
     static var knownEmulatorIDs: [String] { Array(specs.keys) }
 
+    /// Entries that are not an emulator at all -- no app of their own to find,
+    /// so never "absent" -- and the name to show for each.
+    static let standaloneNames: [String: String] = ["nxnative": "Portages Switch (nxnative)"]
+
+    /// The game an nxnative title ID belongs to, from its app's own name.
+    ///
+    /// Each app's bundle identifier is `org.nxnative.<title ID>`; Launch
+    /// Services knows the apps it has seen, on whichever drive. Nil when this
+    /// Mac has never seen the app -- the ID is then all there is.
+    @Sendable static func nxnativeGameName(_ titleID: String) -> String? {
+        guard let app = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: "org.nxnative.\(titleID.lowercased())"),
+              let info = Bundle(url: app)?.infoDictionary else { return nil }
+        return (info["CFBundleDisplayName"] ?? info["CFBundleName"]) as? String
+    }
+
+    /// The folders the backup holds for this emulator that this Mac has not
+    /// made yet -- a game never started here -- for the specs that know where
+    /// such a folder goes. `present` is the backup paths already found.
+    static func folders(onlyInBackup root: URL, forEmulator id: String,
+                        present: Set<String>) -> [SaveFolder] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var found: [SaveFolder] = []
+        for spec in specs[id] ?? [] where spec.restoresMissing {
+            guard let candidate = spec.candidates.first,
+                  candidate.components(separatedBy: "*").count == 2, !candidate.contains("?") else { continue }
+            let slug = spec.slug ?? spec.kind.rawValue
+            let backup = root.appendingPathComponent(id).appendingPathComponent(slug)
+            let names = (try? FileManager.default.contentsOfDirectory(
+                at: backup, includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles])) ?? []
+            for child in names.filter(isDirectory).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let variant = child.lastPathComponent
+                guard !present.contains("\(id)/\(slug)/\(variant)") else { continue }
+                let url = home.appendingPathComponent(candidate.replacingOccurrences(of: "*", with: variant))
+                found.append(SaveFolder(emulatorID: id, kind: spec.kind, slug: slug,
+                                        label: spec.label, url: url.standardizedFileURL, variant: variant,
+                                        filter: BackupEngine.Filter(excluding: Set(spec.excluding),
+                                                                    onlyExtensions: spec.onlyExtensions),
+                                        variantName: spec.describe?(variant), onlyInBackup: true))
+            }
+        }
+        return found
+    }
+
     // MARK: - Resolution
 
     /// The save folders this emulator actually has on this Mac.
@@ -494,7 +564,8 @@ enum SaveCatalog {
             SaveFolder(emulatorID: emulatorID, kind: spec.kind, slug: slug,
                        label: spec.label, url: url.standardizedFileURL, variant: variant,
                        filter: BackupEngine.Filter(excluding: Set(spec.excluding),
-                                                   onlyExtensions: spec.onlyExtensions))
+                                                   onlyExtensions: spec.onlyExtensions),
+                       variantName: variant.isEmpty ? nil : spec.describe?(variant))
         }
 
         // What the emulator says about the folder settles it, and it is the one
