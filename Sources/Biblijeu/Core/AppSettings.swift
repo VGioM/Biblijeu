@@ -10,6 +10,11 @@ final class AppSettings: ObservableObject {
     @Published var romFolders: [String] {
         didSet { defaults.set(romFolders, forKey: Keys.romFolders) }
     }
+    /// Folders inside the ROM folders that the scan and the folder watch leave alone
+    /// (work folders, downloads in progress…).
+    @Published var excludedFolders: [String] {
+        didSet { defaults.set(excludedFolders, forKey: Keys.excludedFolders) }
+    }
     /// Folders scanned for .app bundles.
     @Published var applicationFolders: [String] {
         didSet { defaults.set(applicationFolders, forKey: Keys.appFolders) }
@@ -108,6 +113,7 @@ final class AppSettings: ObservableObject {
 
     private enum Keys {
         static let romFolders = "romFolders"
+        static let excludedFolders = "excludedFolders"
         static let appFolders = "applicationFolders"
         static let scanApps = "scanApplications"
         static let manualApps = "manualApplications"
@@ -155,6 +161,7 @@ final class AppSettings: ObservableObject {
             Keys.autoSignEmulators: true
         ])
         romFolders = defaults.stringArray(forKey: Keys.romFolders) ?? []
+        excludedFolders = defaults.stringArray(forKey: Keys.excludedFolders) ?? []
         applicationFolders = defaults.stringArray(forKey: Keys.appFolders)
             ?? ["/Applications", "\(home)/Applications"]
         manualApplications = defaults.stringArray(forKey: Keys.manualApps) ?? []
@@ -208,6 +215,11 @@ final class AppSettings: ObservableObject {
     /// command-line reports run before the app has one.
     nonisolated static var storedRomFolders: [String] {
         UserDefaults.standard.stringArray(forKey: Keys.romFolders) ?? []
+    }
+
+    /// The excluded folders, readable without the main actor, for the same reason.
+    nonisolated static var storedExcludedFolders: [String] {
+        UserDefaults.standard.stringArray(forKey: Keys.excludedFolders) ?? []
     }
 
     /// The chosen kinds, readable without the main actor, for the same reason.

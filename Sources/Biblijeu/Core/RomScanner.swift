@@ -23,10 +23,11 @@ enum RomScanner {
     ]
 
     /// Folders skipped by suffix: macOS's "do not index" convention (Atelier NX keeps its nxnative
-    /// builds in `nxnative-build.noindex`) and nxnative's per-game `<title ID>_build` work folders, whose
-    /// tens of thousands of files include links to the game files and RomFS images that look like discs.
+    /// builds in `nxnative-build.noindex`), nxnative's per-game `<title ID>_build` work folders, whose
+    /// tens of thousands of files include links to the game files and RomFS images that look like discs,
+    /// and an app still being written (`<game>.app.partial`, renamed to `.app` once complete).
     private static func isWorkFolder(_ name: String) -> Bool {
-        name.hasSuffix(".noindex") || name.hasSuffix("_build")
+        name.hasSuffix(".noindex") || name.hasSuffix("_build") || name.hasSuffix(".partial")
     }
 
     /// `.exe` files that are never the game itself.
@@ -40,19 +41,34 @@ enum RomScanner {
     private static let trackExtensions: Set<String> = ["bin", "img", "raw", "wav", "mp3", "ape", "flac", "sub", "ccd", "mds", "ecm"]
     private static let sheetExtensions: Set<String> = ["cue", "gdi", "m3u", "toc"]
 
-    static func scan(roots: [URL], progress: @escaping (String) -> Void) -> [GameItem] {
+    static func scan(roots: [URL], excluded: [String] = [], progress: @escaping (String) -> Void) -> [GameItem] {
         var items: [GameItem] = []
         for root in roots {
-            guard FileManager.default.fileExists(atPath: root.path) else { continue }
+            guard FileManager.default.fileExists(atPath: root.path), !isExcluded(root.path, excluded) else { continue }
             progress("Analyse de \(root.lastPathComponent)…")
-            items.append(contentsOf: scanRoot(root, progress: progress))
+            items.append(contentsOf: scanRoot(root, excluded: excluded, progress: progress))
         }
         return groupMultiDisc(items)
     }
 
+    /// Whether `path` is one of the user's excluded folders or inside one.
+    static func isExcluded(_ path: String, _ excluded: [String]) -> Bool {
+        excluded.contains { path == $0 || path.hasPrefix($0 + "/") }
+    }
+
+    /// Whether a change the folder watch reports at `path` can be ignored: it is in a
+    /// folder the scan never enters (an excluded folder, a build or save folder…). A
+    /// build writing thousands of files there would otherwise start a scan every few seconds.
+    static func ignoresChange(at path: String, roots: [String], excluded: [String]) -> Bool {
+        if isExcluded(path, excluded) { return true }
+        guard let root = roots.first(where: { path.hasPrefix($0 + "/") }) else { return false }
+        let inner = path.dropFirst(root.count + 1).split(separator: "/").dropLast().map { $0.lowercased() }
+        return inner.contains { skippedFolders.contains($0) || isWorkFolder($0) || $0.hasSuffix(".app") }
+    }
+
     // MARK: - Walking
 
-    private static func scanRoot(_ root: URL, progress: @escaping (String) -> Void) -> [GameItem] {
+    private static func scanRoot(_ root: URL, excluded: [String], progress: @escaping (String) -> Void) -> [GameItem] {
         var items: [GameItem] = []
         var directories: [URL] = [root]
         let fm = FileManager.default
@@ -76,7 +92,7 @@ enum RomScanner {
                         }
                         continue
                     }
-                    if skippedFolders.contains(name) || isWorkFolder(name) { continue }
+                    if skippedFolders.contains(name) || isWorkFolder(name) || isExcluded(url.path, excluded) { continue }
                     if skippedFolders.contains(where: { name.hasPrefix($0 + " ") || name.hasSuffix(" " + $0) }) { continue }
                     subdirectories.append(url)
                 } else {

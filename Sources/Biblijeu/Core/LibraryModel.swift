@@ -2,6 +2,10 @@ import AppKit
 import Combine
 import Foundation
 import UniformTypeIdentifiers
+import os
+
+/// `log stream --predicate 'subsystem == "com.biblijeu.app"'` : qui demande les analyses, et combien de temps elles prennent.
+private let scanLog = Logger(subsystem: "com.biblijeu.app", category: "scan")
 
 /// Where the sidebar can point.
 enum LibrarySection: Hashable, Identifiable {
@@ -133,6 +137,7 @@ final class LibraryModel: ObservableObject {
     private var isCheckingSignatures = false
     private var hasScanned = false
     private var lastScan = Date.distantPast
+    private var scanStarted = Date()
     /// What the last scan found, before the user's corrections are applied.
     private var scannedItems: [GameItem] = []
     private var scannedEmulators: [InstalledEmulator] = []
@@ -188,6 +193,28 @@ final class LibraryModel: ObservableObject {
             folders.append(url.path)
         }
         settings.romFolders = folders
+        rescan()
+    }
+
+    func addExcludedFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Exclure"
+        panel.message = "Choisissez les dossiers que Biblijeu doit ignorer."
+        if let first = settings.romFolders.first { panel.directoryURL = URL(fileURLWithPath: first) }
+        guard panel.runModal() == .OK else { return }
+        var folders = settings.excludedFolders
+        for url in panel.urls where !folders.contains(url.path) {
+            folders.append(url.path)
+        }
+        settings.excludedFolders = folders
+        rescan()
+    }
+
+    func removeExcludedFolder(_ path: String) {
+        settings.excludedFolders.removeAll { $0 == path }
         rescan()
     }
 
@@ -293,12 +320,15 @@ final class LibraryModel: ObservableObject {
         settings.romFolders.filter { !FileManager.default.fileExists(atPath: $0) }
     }
 
-    func rescan() {
+    func rescan(caller: String = #function, line: Int = #line) {
         guard !isScanning else { return }
+        scanLog.info("analyse demandée par \(caller, privacy: .public):\(line)")
+        scanStarted = Date()
         isScanning = true
         scanProgress = "Analyse…"
 
         let romRoots = romFolders
+        let excluded = settings.excludedFolders
         let appRoots = applicationFolders
         let scanApps = settings.scanApplications
         let manualApps = settings.manualApplications.map { URL(fileURLWithPath: $0) }
@@ -310,7 +340,7 @@ final class LibraryModel: ObservableObject {
                 Task { @MainActor in self.scanProgress = text }
             }
 
-            var scanned = RomScanner.scan(roots: romRoots, progress: report)
+            var scanned = RomScanner.scan(roots: romRoots, excluded: excluded, progress: report)
 
             // CrossOver knows more about a Windows game than the folder it sits
             // in does: which bottle it is installed in, and what its icon is.
@@ -362,6 +392,7 @@ final class LibraryModel: ObservableObject {
         refreshOverrides()
         isScanning = false
         scanProgress = ""
+        scanLog.info("analyse terminée : \(self.scannedItems.count) jeux en \(String(format: "%.1f", Date().timeIntervalSince(self.scanStarted)), privacy: .public) s")
         lastScan = Date()
         startWatching()
         if settings.autoFetchArtwork { fetchArtwork() }
@@ -858,10 +889,20 @@ final class LibraryModel: ObservableObject {
             roots.contains { path == $0 || path.hasPrefix($0 + "/") }
         }
         watcher.start(paths: paths + steam) { [weak self] changed in
-            let inLibrary = changed.contains { isUnder($0, paths) && !isUnder($0, steam) }
             Task { @MainActor in
                 guard let self else { return }
-                if inLibrary || Steam.knownGameIDs() != self.steamGameIDs {
+                let excluded = self.settings.excludedFolders
+                let inLibrary = changed.contains {
+                    isUnder($0, paths) && !isUnder($0, steam)
+                        && !RomScanner.ignoresChange(at: $0, roots: paths, excluded: excluded)
+                }
+                let steamChanged = !inLibrary && Steam.knownGameIDs() != self.steamGameIDs
+                if inLibrary || steamChanged {
+                    let first = changed.first {
+                        isUnder($0, paths) && !isUnder($0, steam)
+                            && !RomScanner.ignoresChange(at: $0, roots: paths, excluded: excluded)
+                    } ?? "(Steam)"
+                    scanLog.info("changement surveillé : \(first, privacy: .public) (\(changed.count) chemins)")
                     self.rescan()
                 }
             }

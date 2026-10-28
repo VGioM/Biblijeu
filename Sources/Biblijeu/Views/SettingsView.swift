@@ -56,6 +56,35 @@ private struct SourcesSettings: View {
                 Button("Ajouter un dossier…") { model.addRomFolder() }
             }
 
+            Section {
+                ForEach(settings.excludedFolders, id: \.self) { path in
+                    HStack {
+                        Image(systemName: FileManager.default.fileExists(atPath: path)
+                              ? "folder.badge.minus" : "externaldrive.badge.xmark")
+                            .foregroundStyle(.secondary)
+                        Text((path as NSString).abbreviatingWithTildeInPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(path)
+                        Spacer()
+                        Button {
+                            model.removeExcludedFolder(path)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                Button("Exclure un dossier…") { model.addExcludedFolder() }
+            } header: {
+                Text("Dossiers exclus")
+            } footer: {
+                Text("Ni analysés ni surveillés. Les dossiers de build (« …noindex », « …_build »), de sauvegardes et de journaux le sont déjà d'office.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Dossiers d'applications") {
                 Toggle("Répertorier les jeux et émulateurs installés", isOn: $settings.scanApplications)
                 ForEach(settings.applicationFolders, id: \.self) { path in

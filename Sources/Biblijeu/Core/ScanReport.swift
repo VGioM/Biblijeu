@@ -30,7 +30,7 @@ enum ScanReport {
             exit(0)
         }
 
-        let items = RomScanner.scan(roots: roots) { _ in }
+        let items = RomScanner.scan(roots: roots, excluded: AppSettings.storedExcludedFolders) { _ in }
         print("\nJeux trouvés (\(items.count)) :")
         let bySystem = Dictionary(grouping: items, by: \.systemID)
         for systemID in bySystem.keys.sorted() {
