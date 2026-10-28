@@ -524,16 +524,28 @@ final class BackupManager: ObservableObject {
     /// stops answering cancels the run and lets the app close. The saves are
     /// still on the Mac, and the next launch will copy them.
     func backupOnQuit(timeout: TimeInterval = 20, completion: @escaping @MainActor () -> Void) {
+        // Whichever comes first lets the app go: the run finishing, or the
+        // timeout. Cancelling is not enough on its own -- the folder scan runs
+        // detached and does not stop when asked, so waiting for the run after
+        // cancelling it could still keep the app open for minutes.
+        var done = false
+        let finish = {
+            guard !done else { return }
+            done = true
+            completion()
+        }
         Task {
             let work = Task { await runAutomatically(reason: "à la fermeture") }
             let watchdog = Task {
                 try? await Task.sleep(for: .seconds(timeout))
+                guard !Task.isCancelled else { return }
                 work.cancel()
                 self.cancel()
+                finish()
             }
             await work.value
             watchdog.cancel()
-            completion()
+            finish()
         }
     }
 

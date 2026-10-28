@@ -26,7 +26,7 @@ enum RomScanner {
     /// builds in `nxnative-build.noindex`), nxnative's per-game `<title ID>_build` work folders, whose
     /// tens of thousands of files include links to the game files and RomFS images that look like discs,
     /// and an app still being written (`<game>.app.partial`, renamed to `.app` once complete).
-    private static func isWorkFolder(_ name: String) -> Bool {
+    static func isWorkFolder(_ name: String) -> Bool {
         name.hasSuffix(".noindex") || name.hasSuffix("_build") || name.hasSuffix(".partial")
     }
 

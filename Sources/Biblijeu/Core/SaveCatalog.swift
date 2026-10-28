@@ -473,12 +473,12 @@ enum SaveCatalog {
                                     slug: "\(name)/saves",
                                     label: "Sauvegardes — \(url.lastPathComponent)",
                                     url: url, variant: "",
-                                    filter: BackupEngine.Filter(onlyExtensions: adjacentSaves)))
+                                    filter: BackupEngine.Filter(onlyExtensions: adjacentSaves, skipsWorkFolders: true)))
             found.append(SaveFolder(emulatorID: romsID, kind: .states,
                                     slug: "\(name)/states",
                                     label: "Sauvegardes d'état — \(url.lastPathComponent)",
                                     url: url, variant: "",
-                                    filter: BackupEngine.Filter(onlyExtensions: adjacentStates)))
+                                    filter: BackupEngine.Filter(onlyExtensions: adjacentStates, skipsWorkFolders: true)))
         }
         return found
     }

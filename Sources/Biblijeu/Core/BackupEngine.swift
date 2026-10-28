@@ -56,6 +56,17 @@ enum BackupEngine {
         var excluding: Set<String> = []
         /// Extensions to copy, lowercased. Empty means the whole folder.
         var onlyExtensions: Set<String> = []
+        /// Skip what a ROM folder holds that is never a game's save: build
+        /// folders (nxnative's run to hundreds of thousands of files) and app
+        /// bundles. Walking those is what made a backup take minutes.
+        var skipsWorkFolders = false
+
+        /// True for a folder whose contents are none of the backup's business.
+        func skips(folder url: URL) -> Bool {
+            if excluding.contains(url.lastPathComponent) { return true }
+            guard skipsWorkFolders else { return false }
+            return url.pathExtension.lowercased() == "app" || RomScanner.isWorkFolder(url.lastPathComponent)
+        }
 
         var copiesEverything: Bool { onlyExtensions.isEmpty }
 
@@ -87,7 +98,7 @@ enum BackupEngine {
             guard let values = try? child.resourceValues(forKeys: Set(keys)),
                   !isSymbolicLink(values) else { continue }
             if values.isDirectory == true {
-                if filter.excluding.contains(child.lastPathComponent) { walker.skipDescendants() }
+                if filter.skips(folder: child) { walker.skipDescendants() }
                 continue
             }
             guard values.isRegularFile == true, filter.wants(child) else { continue }
@@ -150,7 +161,7 @@ enum BackupEngine {
             let target = destination.appendingPathComponent(relative)
 
             if values.isDirectory == true {
-                if child.standardizedFileURL.path == ownDestination {
+                if child.standardizedFileURL.path == ownDestination || filter.skips(folder: child) {
                     walker.skipDescendants()
                     continue
                 }
