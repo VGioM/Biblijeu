@@ -171,30 +171,58 @@ enum RomScanner {
     /// consoles that share it.
     private static func resolveSystem(for url: URL, extension ext: String, root: URL) -> GameSystem? {
         let candidates = SystemCatalog.systems(forExtension: ext)
-        let hinted = folderHint(for: url, root: root)
-
-        if let hinted {
-            if candidates.contains(where: { $0.id == hinted.id }) { return hinted }
-            // The folder says "PS2" but the extension is .cue -- trust the folder
-            // only when the extension is a generic container.
-            if candidates.isEmpty { return hinted }
-            if hinted.fileExtensions.contains(ext) { return hinted }
+        let hints = folderHints(for: url, root: root)
+        if !hints.isEmpty {
+            // A console's folder holds that console's games, in its formats, and nothing
+            // else: a README.md in "MacOS" is not a Mega Drive game, nor a .xex an Xbox one.
+            return hints.first { hint in
+                candidates.contains { $0.id == hint.id } || hint.fileExtensions.contains(ext)
+            }
         }
+        // Outside any console folder, only a format that can be nothing else: a .bin,
+        // an .iso or an .md could be anything, a .nsp or a .z64 cannot.
+        guard candidates.count == 1, !everydayExtensions.contains(ext) else { return nil }
         return candidates.first
     }
 
-    /// The nearest ancestor folder (up to the scan root) that names a console.
-    private static func folderHint(for url: URL, root: URL) -> GameSystem? {
+    /// Extensions that ROM formats share with ordinary files.
+    private static let everydayExtensions: Set<String> = [
+        "md", "bin", "img", "gz", "elf", "raw", "dat", "txt", "sub", "wav", "mp3", "flac", "ape",
+        "zip", "7z", "bat", "lnk", "msi", "sh", "command"
+    ]
+
+    /// The consoles named by the nearest ancestor folder (up to the scan root) that
+    /// names any: one for "PS2", two for "Wii : Wii U".
+    private static func folderHints(for url: URL, root: URL) -> [GameSystem] {
         var dir = url.deletingLastPathComponent()
         let rootPath = root.standardizedFileURL.path
         while dir.standardizedFileURL.path.hasPrefix(rootPath) {
-            if let system = SystemCatalog.system(forFolderName: dir.lastPathComponent) { return system }
+            let found = consoles(namedBy: dir.lastPathComponent)
+            if !found.isEmpty { return found }
             let parent = dir.deletingLastPathComponent()
             if parent.path == dir.path { break }
             dir = parent
         }
         // The scan root itself may be named after a console.
-        return SystemCatalog.system(forFolderName: root.lastPathComponent)
+        return consoles(namedBy: root.lastPathComponent)
+    }
+
+    private static func consoles(namedBy name: String) -> [GameSystem] {
+        var found: [GameSystem] = []
+        let parts = [name] + name.components(separatedBy: CharacterSet(charactersIn: ":&+,/"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && $0 != name }
+        for part in parts {
+            if let system = SystemCatalog.system(forFolderName: part), !found.contains(where: { $0.id == system.id }) {
+                found.append(system)
+            }
+        }
+        return found
+    }
+
+    /// The nearest console folder's first console.
+    private static func folderHint(for url: URL, root: URL) -> GameSystem? {
+        folderHints(for: url, root: root).first
     }
 
     /// The one executable that launches the game living in `directory`, if this
