@@ -76,7 +76,7 @@ enum RomScanner {
         while let dir = directories.popLast() {
             guard let contents = try? fm.contentsOfDirectory(
                 at: dir,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .creationDateKey, .contentModificationDateKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .isAliasFileKey, .fileSizeKey, .creationDateKey, .contentModificationDateKey],
                 options: [.skipsHiddenFiles]) else { continue }
 
             var files: [URL] = []
@@ -95,6 +95,16 @@ enum RomScanner {
                     if skippedFolders.contains(name) || isWorkFolder(name) || isExcluded(url.path, excluded) { continue }
                     if skippedFolders.contains(where: { name.hasPrefix($0 + " ") || name.hasSuffix(" " + $0) }) { continue }
                     subdirectories.append(url)
+                } else if let target = aliasTarget(url) {
+                    // A Finder alias or a symbolic link: the way to list one game out of a
+                    // folder the scan should not enter (an excluded folder, a big source tree).
+                    if target.pathExtension.lowercased() == "app" {
+                        if let item = ApplicationScanner.item(for: target, forcedKind: .game) {
+                            items.append(item)
+                        }
+                    } else if (try? target.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+                        files.append(target)
+                    }
                 } else {
                     files.append(url)
                 }
@@ -117,6 +127,13 @@ enum RomScanner {
             items.append(contentsOf: games(in: dir, files: files, root: root))
         }
         return items
+    }
+
+    /// Where a Finder alias or a symbolic link points, if `url` is one (without
+    /// asking to mount a drive or showing anything).
+    private static func aliasTarget(_ url: URL) -> URL? {
+        guard (try? url.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true else { return nil }
+        return try? URL(resolvingAliasFileAt: url, options: [.withoutUI, .withoutMounting])
     }
 
     /// Decides which files in one directory are actual games.

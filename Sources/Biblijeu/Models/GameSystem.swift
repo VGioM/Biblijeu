@@ -311,7 +311,7 @@ enum SystemCatalog {
         GameSystem(id: "mac", name: "Jeu macOS", shortName: "macOS",
                    manufacturer: "Apple", symbol: "applelogo", year: 2000,
                    libretroFolder: nil,
-                   fileExtensions: ["app", "command", "sh"],
+                   fileExtensions: ["app"],   // pas les scripts (.sh, .command) : ce sont des outils, pas des jeux
                    folderAliases: ["mac", "macos", "osx"],
                    emulators: [])
     ]
