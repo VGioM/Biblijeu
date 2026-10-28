@@ -17,8 +17,17 @@ enum RomScanner {
         "__macosx", "assets", "shaders", "overlays", "thumbnails", "temp",
         // Resource trees of level editors and game engines, full of .wad parts.
         "fabs", "prefabs", "addons", "modules", "presets", "engines", "tools",
-        "language", "ports", "docs", "licenses", "theme", "scripts"
+        "language", "ports", "docs", "licenses", "theme", "scripts",
+        // Atelier NX / nxnative next to the Switch games: save copies and build logs.
+        "save", "log"
     ]
+
+    /// Folders skipped by suffix: macOS's "do not index" convention (Atelier NX keeps its nxnative
+    /// builds in `nxnative-build.noindex`) and nxnative's per-game `<title ID>_build` work folders, whose
+    /// tens of thousands of files include links to the game files and RomFS images that look like discs.
+    private static func isWorkFolder(_ name: String) -> Bool {
+        name.hasSuffix(".noindex") || name.hasSuffix("_build")
+    }
 
     /// `.exe` files that are never the game itself.
     private static let executableNoise = [
@@ -67,7 +76,7 @@ enum RomScanner {
                         }
                         continue
                     }
-                    if skippedFolders.contains(name) { continue }
+                    if skippedFolders.contains(name) || isWorkFolder(name) { continue }
                     if skippedFolders.contains(where: { name.hasPrefix($0 + " ") || name.hasSuffix(" " + $0) }) { continue }
                     subdirectories.append(url)
                 } else {
@@ -119,6 +128,7 @@ enum RomScanner {
             if url.lastPathComponent.hasPrefix("._") { continue }
 
             guard let system = resolveSystem(for: url, extension: ext, root: root) else { continue }
+            if system.id == "switch", !SwitchTitle.isBaseGame(url) { continue }
             items.append(makeItem(url: url, system: system, root: root))
         }
         return items
