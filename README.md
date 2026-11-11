@@ -50,8 +50,8 @@ archive ne couvre pas — une clé SteamGridDB gratuite prend le relais.
 
 **Sauvegarde.** L'onglet « Sauvegarde » trouve où chaque émulateur range ses
 sauvegardes et les copie sur le disque de votre choix — à la demande, ou tout
-seul : toutes les X minutes, au lancement et à la fermeture. La restauration se
-fait dans l'autre sens, à la main.
+seul : toutes les X minutes, au lancement et à la fermeture. C'est toujours la
+partie la plus récente qui gagne, qu'elle soit sur le Mac ou sur le disque.
 
 ---
 
@@ -422,10 +422,17 @@ minutes ne coûte qu'un parcours de dossiers — mais elle n'efface rien à
 l'arrivée. Une carte mémoire corrompue, un profil réinitialisé, un jeu
 désinstallé : la copie reste, et c'est toute la raison d'en avoir une.
 
-**L'automatique ne va que dans un sens.** Des émulateurs vers le disque, jamais
-l'inverse : restaurer remplace une partie par une plus ancienne, et c'est
-exactement l'accident que cet onglet existe pour éviter. « Restaurer » se
-demande donc à la main, avec confirmation, émulateur par émulateur ou en bloc.
+**La partie la plus récente gagne.** Chaque copie compare les dates : un
+fichier plus récent sur le Mac part sur le disque, un fichier plus récent sur le
+disque (joué sur un autre Mac, par exemple) n'est pas écrasé, et l'automatique
+le ramène ensuite sur ce Mac. Ce retour ne remplace que des fichiers que le Mac
+a déjà, jamais un jeu supprimé exprès, et saute les émulateurs ouverts à ce
+moment-là, qui récriraient leur propre copie par-dessus. Jamais une partie plus
+ancienne ne remplace une plus récente.
+
+« Restaurer », à la main, avec confirmation, émulateur par émulateur ou en bloc,
+fait l'inverse : il remet tout ce que contient le disque, même plus ancien —
+c'est ce qu'on lui demande pour revenir sur une partie ratée ou corrompue.
 
 | Déclencheur | Réglage |
 |---|---|

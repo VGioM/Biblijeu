@@ -95,6 +95,78 @@ struct BackupEngineTests {
         #expect(!exists(destination, "Backups"))
     }
 
+    private func age(_ url: URL, by seconds: TimeInterval) throws {
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-seconds)], ofItemAtPath: url.path)
+    }
+
+    private func read(_ url: URL, _ path: String) throws -> String {
+        try String(contentsOf: url.appendingPathComponent(path), encoding: .utf8)
+    }
+
+    @Test func aNewerCopyAtTheDestinationIsKeptWhenNewestWins() throws {
+        let f = Fixture(named: "Saves")
+        let old = f.file("slot1.sav", "old here")
+        try age(old, by: 3600)
+        let destination = f.sibling("Backup")
+        let backup = destination.appendingPathComponent("slot1.sav")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("newer on the drive".utf8).write(to: backup)
+
+        let outcome = BackupEngine.copy(from: f.root, to: destination, rules: .newest)
+        #expect(outcome.copied == 0)
+        #expect(outcome.keptNewer == 1)
+        #expect(try read(destination, "slot1.sav") == "newer on the drive")
+    }
+
+    @Test func anOlderCopyAtTheDestinationIsReplacedWhenNewestWins() throws {
+        let f = Fixture(named: "Saves")
+        f.file("slot1.sav", "newer here")
+        let destination = f.sibling("Backup")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let backup = destination.appendingPathComponent("slot1.sav")
+        try Data("old on the drive".utf8).write(to: backup)
+        try age(backup, by: 3600)
+
+        let outcome = BackupEngine.copy(from: f.root, to: destination, rules: .newest)
+        #expect(outcome.copied == 1)
+        #expect(try read(destination, "slot1.sav") == "newer here")
+    }
+
+    @Test func theSourceWinsWhenAskedByHand() throws {
+        let f = Fixture(named: "Backup")
+        let old = f.file("slot1.sav", "older backup")
+        try age(old, by: 3600)
+        let emulator = f.sibling("Emulator")
+        try FileManager.default.createDirectory(at: emulator, withIntermediateDirectories: true)
+        try Data("newer here".utf8).write(to: emulator.appendingPathComponent("slot1.sav"))
+
+        let outcome = BackupEngine.copy(from: f.root, to: emulator)
+        #expect(outcome.copied == 1)
+        #expect(try read(emulator, "slot1.sav") == "older backup")
+    }
+
+    @Test func onlyExistingNeverAddsFiles() throws {
+        let f = Fixture(named: "Backup")
+        f.file("kept.sav", "newer on the drive")
+        f.file("deleted-here.sav")
+        let emulator = f.sibling("Emulator")
+        try FileManager.default.createDirectory(at: emulator, withIntermediateDirectories: true)
+        let local = emulator.appendingPathComponent("kept.sav")
+        try Data("old".utf8).write(to: local)
+        try age(local, by: 3600)
+
+        let outcome = BackupEngine.copy(from: f.root, to: emulator,
+                                        rules: .init(newestWins: true, onlyExisting: true))
+        #expect(outcome.copied == 1)
+        #expect(try read(emulator, "kept.sav") == "newer on the drive")
+        #expect(!exists(emulator, "deleted-here.sav"))
+        // A destination that is not there is not created.
+        let absent = f.sibling("Absent")
+        _ = BackupEngine.copy(from: f.root, to: absent, rules: .init(newestWins: true, onlyExisting: true))
+        #expect(!FileManager.default.fileExists(atPath: absent.path))
+    }
+
     @Test func aMissingSourceIsReportedNotCrashed() {
         let f = Fixture(named: "Saves")
         let outcome = BackupEngine.copy(from: f.sibling("absent"), to: f.sibling("Backup"))

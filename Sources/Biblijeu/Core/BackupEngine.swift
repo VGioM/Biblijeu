@@ -13,17 +13,21 @@ enum BackupEngine {
     struct Outcome: Sendable {
         var copied = 0
         var identical = 0
+        /// Files left alone because the copy already at the destination is
+        /// more recent than the one being copied.
+        var keptNewer = 0
         var bytes: Int64 = 0
         /// Readable reasons, capped: a folder of unreadable files should not
         /// produce a thousand-line report.
         var failures: [String] = []
         var cancelled = false
 
-        var isEmpty: Bool { copied == 0 && identical == 0 && failures.isEmpty }
+        var isEmpty: Bool { copied == 0 && identical == 0 && keptNewer == 0 && failures.isEmpty }
 
         static func + (a: Outcome, b: Outcome) -> Outcome {
             Outcome(copied: a.copied + b.copied,
                     identical: a.identical + b.identical,
+                    keptNewer: a.keptNewer + b.keptNewer,
                     bytes: a.bytes + b.bytes,
                     failures: Array((a.failures + b.failures).prefix(maxFailures)),
                     cancelled: a.cancelled || b.cancelled)
@@ -31,6 +35,21 @@ enum BackupEngine {
     }
 
     private static let maxFailures = 8
+
+    /// How a file already at the destination is treated.
+    struct Rules: Sendable, Hashable {
+        /// Never replace a file with an older one: the most recent save wins,
+        /// whichever side it is on. Off, the source always wins -- what a
+        /// restore asked for by hand needs, to go back to an earlier save.
+        var newestWins = false
+        /// Only replace files the destination already has, never add any.
+        /// For bringing more recent saves back from the drive without
+        /// restoring games deleted here on purpose.
+        var onlyExisting = false
+
+        static let sourceWins = Rules()
+        static let newest = Rules(newestWins: true)
+    }
 
     /// Files that belong to the Finder rather than to a game.
     private static let ignored: Set<String> = [".DS_Store", "Icon\r", ".localized"]
@@ -114,7 +133,7 @@ enum BackupEngine {
     /// is left alone, so a backup that runs every ten minutes costs a directory
     /// walk and nothing else.
     static func copy(from source: URL, to destination: URL,
-                     filter: Filter = .everything) -> Outcome {
+                     filter: Filter = .everything, rules: Rules = .sourceWins) -> Outcome {
         var outcome = Outcome()
         let fm = FileManager.default
 
@@ -123,6 +142,9 @@ enum BackupEngine {
             outcome.failures.append("Dossier introuvable : \(source.path)")
             return outcome
         }
+
+        // Nothing there means nothing to replace.
+        if rules.onlyExisting, !fm.fileExists(atPath: destination.path) { return outcome }
 
         do {
             try fm.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -169,7 +191,7 @@ enum BackupEngine {
                 // an emulator's empty state folder is worth keeping as it is,
                 // while a filtered copy must not rebuild a whole ROM library's
                 // tree of folders to hold a handful of saves.
-                if filter.copiesEverything {
+                if filter.copiesEverything, !rules.onlyExisting {
                     try? fm.createDirectory(at: target, withIntermediateDirectories: true)
                 }
                 continue
@@ -178,6 +200,11 @@ enum BackupEngine {
 
             if isUpToDate(target, size: values.fileSize, modified: values.contentModificationDate) {
                 outcome.identical += 1
+                continue
+            }
+            if rules.onlyExisting, !fm.fileExists(atPath: target.path) { continue }
+            if rules.newestWins, isNewer(target, than: values.contentModificationDate) {
+                outcome.keptNewer += 1
                 continue
             }
             do {
@@ -212,6 +239,15 @@ enum BackupEngine {
               let size, let modified else { return false }
         // A second of tolerance: not every file system stores the same precision.
         return theirSize == size && abs(theirDate.timeIntervalSince(modified)) < 1
+    }
+
+    /// True when the file at `target` was modified after `date`, by more than
+    /// the second of tolerance file systems need.
+    private static func isNewer(_ target: URL, than date: Date?) -> Bool {
+        guard let date,
+              let theirs = try? target.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate else { return false }
+        return theirs.timeIntervalSince(date) >= 1
     }
 
     private static func relativePath(of url: URL, under root: String) -> String? {

@@ -252,7 +252,7 @@ struct BackupsView: View {
                 .foregroundStyle(Theme.accentWarm)
         }
 
-        Text("L'automatique ne va que dans un sens : des émulateurs vers le disque. Restaurer se demande à la main, car cela remplace une partie par une plus ancienne.")
+        Text("L'automatique garde toujours la partie la plus récente : ce qui est plus récent sur ce Mac part sur le disque, ce qui est plus récent sur le disque revient sur ce Mac, et jamais une partie plus ancienne ne remplace une plus récente. Restaurer, à la main, remet tout ce que contient le disque, même plus ancien.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

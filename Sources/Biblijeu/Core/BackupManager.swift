@@ -29,10 +29,12 @@ struct BackupManifest: Codable {
 
 /// Which way the files move.
 enum BackupDirection: Sendable {
-    /// The emulators' folders onto the backup drive. The only direction that
-    /// ever runs by itself.
+    /// The emulators' folders onto the backup drive. A save the drive holds a
+    /// more recent copy of -- played on another Mac -- is left as it is.
     case toBackup
-    /// The backup drive back into the emulators' folders, asked for by hand.
+    /// The backup drive back into the emulators' folders. Asked for by hand it
+    /// puts every file back, older or not; the automatic run only brings back
+    /// saves more recent than the ones here.
     case toEmulator
 
     var label: String {
@@ -72,9 +74,10 @@ struct FolderState: Identifiable {
 /// Finds where every emulator keeps its saves, copies them onto a drive of the
 /// user's choosing, and puts them back when asked.
 ///
-/// The automatic run only ever goes one way -- emulators to backup. Restoring
-/// overwrites a save with an older one, which is the one mistake this whole
-/// feature exists to prevent, so it is never done without being asked.
+/// The automatic run keeps the most recent save on both sides: newer saves
+/// here go onto the drive, newer saves on the drive come back here, and an
+/// older file never replaces a newer one. Only a restore asked for by hand
+/// puts an older save back, since going back to one is why it is asked for.
 @MainActor
 final class BackupManager: ObservableObject {
     static let shared = BackupManager()
@@ -399,10 +402,25 @@ final class BackupManager: ObservableObject {
         let folders = selectedFolders
         guard !folders.isEmpty else { return }
         await perform(.toBackup, folders: folders, reason: reason)
+        // Then the other way, for saves the drive holds a more recent copy of.
+        // Never into a folder an emulator running right now is using: it would
+        // write its own copy back over the one just brought in.
+        let running = Self.runningEmulatorIDs()
+        let pulls = folders.filter { !$0.onlyInBackup && !running.contains($0.emulatorID) }
+        guard !Task.isCancelled, !pulls.isEmpty else { return }
+        await perform(.toEmulator, folders: pulls, reason: reason, pullingNewer: true)
+    }
+
+    /// The emulators open at this moment, by id.
+    private static func runningEmulatorIDs() -> Set<String> {
+        let open = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        return Set(EmulatorCatalog.byID.compactMap { id, spec in
+            spec.bundleIDs.contains(where: open.contains) ? id : nil
+        })
     }
 
     private func perform(_ direction: BackupDirection, folders: [SaveFolder],
-                         reason: String? = nil) async {
+                         reason: String? = nil, pullingNewer: Bool = false) async {
         guard let root else { return }
         var total = BackupEngine.Outcome()
         var manifest = Self.readManifest(root.appendingPathComponent(BackupManifest.fileName))
@@ -420,7 +438,7 @@ final class BackupManager: ObservableObject {
             progress = "\(direction.label) — \(name), \(folder.title)…"
 
             let copy = await Task.detached(priority: .utility) {
-                Self.copy(folder, direction: direction, root: root)
+                Self.copy(folder, direction: direction, root: root, pullingNewer: pullingNewer)
             }.value
             guard !copy.skipped else { continue }
 
@@ -449,8 +467,18 @@ final class BackupManager: ObservableObject {
             UserDefaults.standard.set(now, forKey: Keys.lastRun)
         }
 
-        lastFailures = total.failures
-        lastSummary = summary(for: total, direction: direction, folders: touched, reason: reason)
+        if pullingNewer {
+            // The second half of an automatic run: added to what the first
+            // half said, and only when something actually came back.
+            lastFailures = Array((lastFailures + total.failures).prefix(8))
+            if total.copied > 0 {
+                lastSummary = (lastSummary.map { $0 + " " } ?? "")
+                    + "Repris du disque, plus récents : \(total.copied) fichier(s)."
+            }
+        } else {
+            lastFailures = total.failures
+            lastSummary = summary(for: total, direction: direction, folders: touched, reason: reason)
+        }
         await rescan()
     }
 
@@ -469,6 +497,10 @@ final class BackupManager: ObservableObject {
         } else {
             text = "\(when)\(why) — \(what) : \(outcome.copied) fichier(s), \(bytes), "
                 + "sur \(folders) dossier(s)."
+        }
+        if outcome.keptNewer > 0 {
+            let side = direction == .toBackup ? "sur le disque" : "sur ce Mac"
+            text += " \(outcome.keptNewer) fichier(s) plus récent(s) \(side) conservé(s)."
         }
         if !outcome.failures.isEmpty {
             text += " \(outcome.failures.count) échec(s)."
@@ -560,8 +592,10 @@ final class BackupManager: ObservableObject {
     /// one folder at a time so it can say where it is, the command-line report
     /// drives it in a loop, and neither can end up copying differently from the
     /// other.
+    /// `pullingNewer` makes a restore bring back only saves more recent than
+    /// the ones here, and only for files this Mac already has.
     nonisolated static func copy(_ folder: SaveFolder, direction: BackupDirection,
-                                 root: URL) -> FolderCopy {
+                                 root: URL, pullingNewer: Bool = false) -> FolderCopy {
         let backup = root.appendingPathComponent(folder.backupSubpath, isDirectory: true)
         let source = direction == .toBackup ? folder.url : backup
         let target = direction == .toBackup ? backup : folder.url
@@ -576,7 +610,12 @@ final class BackupManager: ObservableObject {
             return FolderCopy(skipped: true)
         }
 
-        let outcome = BackupEngine.copy(from: source, to: target, filter: folder.filter)
+        let rules: BackupEngine.Rules
+        switch direction {
+        case .toBackup:   rules = .newest
+        case .toEmulator: rules = pullingNewer ? .init(newestWins: true, onlyExisting: true) : .sourceWins
+        }
+        let outcome = BackupEngine.copy(from: source, to: target, filter: folder.filter, rules: rules)
 
         // Only a copy that went onto the drive without failing is worth
         // recording: a half-copied folder must not be remembered as a backup.
