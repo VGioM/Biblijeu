@@ -4,6 +4,10 @@ Une bibliothèque de jeux pour macOS, dans l'esprit de Biblifilm : elle regarde
 vos dossiers de ROM et vos applications, reconnaît les consoles, retrouve les
 jaquettes, et lance chaque jeu avec le bon émulateur — en un clic.
 
+## Télécharger
+
+**[⬇︎ Dernière version (macOS 14+, Apple Silicon)](https://github.com/VGioM/Biblijeu/releases/latest)** — décompressez, glissez Biblijeu.app dans Applications. Au premier lancement, autorisez-la dans Réglages Système → Confidentialité et sécurité → « Ouvrir quand même » (l'app n'est pas signée par Apple).
+
 ```bash
 ./build.sh          # compile dist/Biblijeu.app
 ./install.sh        # facultatif : copie dans /Applications
