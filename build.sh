@@ -24,8 +24,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key>           <string>Biblijeu</string>
     <key>CFBundleExecutable</key>            <string>Biblijeu</string>
     <key>CFBundleIdentifier</key>            <string>com.biblijeu.app</string>
-    <key>CFBundleVersion</key>               <string>1.3.3</string>
-    <key>CFBundleShortVersionString</key>    <string>1.3.3</string>
+    <key>CFBundleVersion</key>               <string>1.3.4</string>
+    <key>CFBundleShortVersionString</key>    <string>1.3.4</string>
     <key>CFBundlePackageType</key>           <string>APPL</string>
     <key>CFBundleIconFile</key>              <string>AppIcon</string>
     <key>CFBundleIconName</key>              <string>AppIcon</string>
