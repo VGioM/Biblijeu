@@ -16,6 +16,9 @@ struct SettingsView: View {
                 .tabItem { Label("Mises à jour", systemImage: "arrow.down.circle") }
             BackupsView(model: model)
                 .tabItem { Label("Sauvegarde", systemImage: "externaldrive.badge.timemachine") }
+            Form { SelfUpdateSettings() }
+                .formStyle(.grouped)
+                .tabItem { Label("Application", systemImage: "app.badge") }
         }
         .frame(width: 520, height: 430)
     }
