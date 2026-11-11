@@ -45,6 +45,7 @@ struct ArtworkView: View {
     var showsPlaceholderSymbol = true
 
     @State private var image: NSImage?
+    @State private var backdrop: NSImage?
     @State private var loadedKey: String?
     @State private var isLoading = false
 
@@ -78,11 +79,14 @@ struct ArtworkView: View {
             // to the clip. As an overlay it can spill without moving anything.
             Color.clear
                 .overlay {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .blur(radius: 22)
-                        .opacity(0.55)
+                    // Blurred once, small, by the cache -- see `backdrop(for:)`.
+                    if let backdrop {
+                        Image(nsImage: backdrop)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                            .opacity(0.55)
+                    }
                 }
                 .overlay(Color.black.opacity(0.28))
                 .overlay {
@@ -108,6 +112,7 @@ struct ArtworkView: View {
     private func load() async {
         guard !ref.isEmpty else {
             image = nil
+            backdrop = nil
             loadedKey = nil
             return
         }
@@ -117,9 +122,13 @@ struct ArtworkView: View {
 
         isLoading = true
         let loaded = await ArtworkCache.shared.image(for: ref)
+        let blurred = if let loaded { await ArtworkCache.shared.backdrop(for: ref, from: loaded) } else { nil as NSImage? }
         isLoading = false
         guard !Task.isCancelled else { return }
         loadedKey = loaded != nil ? ref.cacheKey : nil
-        withAnimation(.easeOut(duration: 0.22)) { image = loaded }
+        withAnimation(.easeOut(duration: 0.22)) {
+            image = loaded
+            backdrop = blurred
+        }
     }
 }

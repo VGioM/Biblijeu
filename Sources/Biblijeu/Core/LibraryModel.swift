@@ -103,9 +103,16 @@ final class LibraryModel: ObservableObject {
     @Published var showInspector = true
 
     @Published private(set) var isScanning = false
-    @Published private(set) var scanProgress = ""
+    /// Progress lines live in `LibraryActivity`, not here: see there.
+    private(set) var scanProgress: String {
+        get { activity.scanProgress }
+        set { if activity.scanProgress != newValue { activity.scanProgress = newValue } }
+    }
     @Published private(set) var isFetchingArtwork = false
-    @Published private(set) var artworkProgress: Double = 0
+    private(set) var artworkProgress: Double {
+        get { activity.artworkProgress }
+        set { if activity.artworkProgress != newValue { activity.artworkProgress = newValue } }
+    }
     @Published var errorMessage: String?
     @Published var infoMessage: String?
     /// What each emulator's project answered when last asked about its
@@ -118,7 +125,11 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var isCheckingUpdates = false
     /// What an install or a signing is doing right now, by emulator id
     /// ("Téléchargement 42 %"…).
-    @Published private(set) var emulatorActivity: [String: String] = [:]
+    private(set) var emulatorActivity: [String: String] {
+        get { activity.emulatorActivity }
+        set { if activity.emulatorActivity != newValue { activity.emulatorActivity = newValue } }
+    }
+    private let activity = LibraryActivity.shared
     /// Why the last install or signing of an emulator failed, by id.
     @Published private(set) var emulatorProblems: [String: String] = [:]
     /// What the last install or signing did, by id, for the row to say so.
@@ -141,6 +152,9 @@ final class LibraryModel: ObservableObject {
     /// What the last scan found, before the user's corrections are applied.
     private var scannedItems: [GameItem] = []
     private var scannedEmulators: [InstalledEmulator] = []
+    /// What the folder watcher was last pointed at, drives included -- still
+    /// known once a drive is gone, to tell its unmounting matters.
+    private var watchedPaths: [String] = []
 
     init() {
         // The grid reflects favourites, play dates and freshly found covers.
@@ -154,9 +168,18 @@ final class LibraryModel: ObservableObject {
         // A library kept on an external drive comes and goes with the drive.
         // Rescan when one is plugged in, and again when one is pulled out, so
         // the grid matches what is actually reachable without anyone asking.
+        //
+        // Only a drive the library actually uses, though. Every disk image
+        // mounts as a volume too: the emulator updates Biblijeu installs by
+        // itself arrive as .dmg files, each mounted and unmounted in turn, and
+        // used to set off two full scans apiece -- a dozen in the minute after
+        // launch -- as did any .dmg opened in the Finder, or Time Machine.
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
             center.publisher(for: name)
+                .filter { [weak self] note in
+                    self?.libraryUses(volume: note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL) ?? false
+                }
                 .debounce(for: .seconds(2), scheduler: DispatchQueue.main)
                 .sink { [weak self] _ in self?.rescan() }
                 .store(in: &cancellables)
@@ -172,6 +195,23 @@ final class LibraryModel: ObservableObject {
                 self?.harvestStates()
             }
             .store(in: &cancellables)
+    }
+
+    /// Whether a drive coming or going can change what Biblijeu shows: it
+    /// holds, or held, a ROM folder, an application folder, an app added by
+    /// hand, a Steam library or CrossOver bottle we watch, or the backup
+    /// destination the sidebar reports on. Without a volume to go by, assume
+    /// it does.
+    private func libraryUses(volume: URL?) -> Bool {
+        guard let volume else { return true }
+        let root = volume.standardizedFileURL.path
+        guard root != "/" else { return true }
+        let paths = settings.romFolders + settings.applicationFolders
+            + settings.manualApplications + [settings.backupDestination]
+            + watchedPaths + Steam.watchPaths()
+        let used = paths.contains { $0 == root || $0.hasPrefix(root + "/") }
+        if !used { scanLog.info("volume ignoré : \(root, privacy: .public)") }
+        return used
     }
 
     // MARK: - Sources
@@ -888,6 +928,7 @@ final class LibraryModel: ObservableObject {
         func isUnder(_ path: String, _ roots: [String]) -> Bool {
             roots.contains { path == $0 || path.hasPrefix($0 + "/") }
         }
+        watchedPaths = paths + steam
         watcher.start(paths: paths + steam) { [weak self] changed in
             Task { @MainActor in
                 guard let self else { return }
@@ -896,7 +937,12 @@ final class LibraryModel: ObservableObject {
                     isUnder($0, paths) && !isUnder($0, steam)
                         && !RomScanner.ignoresChange(at: $0, roots: paths, excluded: excluded)
                 }
-                let steamChanged = !inLibrary && Steam.knownGameIDs() != self.steamGameIDs
+                // Reading every manifest is only worth it when one of the files
+                // that list the games moved; Steam rewrites the rest of its
+                // folders constantly, all the more while a game runs.
+                let steamChanged = !inLibrary
+                    && changed.contains { Steam.mayChangeGameList(at: $0, roots: steam) }
+                    && Steam.knownGameIDs() != self.steamGameIDs
                 if inLibrary || steamChanged {
                     let first = changed.first {
                         isUnder($0, paths) && !isUnder($0, steam)
@@ -1381,22 +1427,29 @@ final class LibraryModel: ObservableObject {
         }
     }
 
+    /// How many games each shelf of the sidebar holds, in one pass over the
+    /// library rather than one per shelf.
     var counts: [LibrarySection: Int] {
         var result: [LibrarySection: Int] = [:]
-        let visible = items.filter { !play.isHidden($0.id) }
-        result[.all] = visible.count
-        result[.recent] = visible.filter { play.lastPlayed($0.id) != nil }.count
-        result[.favorites] = visible.filter { play.isFavorite($0.id) }.count
-        result[.roms] = visible.filter { $0.kind == .rom }.count
-        result[.games] = visible.filter { $0.kind == .game }.count
-        result[.emulators] = visible.filter { $0.kind == .emulator }.count
-        result[.other] = visible.filter { $0.kind == .other }.count
-        result[.unplayable] = visible.filter { $0.kind == .rom && emulator(for: $0) == nil }.count
-        for system in systemsWithGames {
-            result[.system(system.id)] = visible.filter { $0.systemID == system.id && $0.kind.belongsToSystem }.count
-        }
-        for path in settings.romFolders {
-            result[.source(path)] = visible.filter { $0.sourceRoot?.path.hasPrefix(path) == true }.count
+        let folders = settings.romFolders
+        func bump(_ section: LibrarySection) { result[section, default: 0] += 1 }
+
+        for item in items where !play.isHidden(item.id) {
+            bump(.all)
+            if play.lastPlayed(item.id) != nil { bump(.recent) }
+            if play.isFavorite(item.id) { bump(.favorites) }
+            switch item.kind {
+            case .rom:
+                bump(.roms)
+                if emulator(for: item) == nil { bump(.unplayable) }
+            case .game: bump(.games)
+            case .emulator: bump(.emulators)
+            case .other: bump(.other)
+            }
+            if item.kind.belongsToSystem { bump(.system(item.systemID)) }
+            if let root = item.sourceRoot?.path {
+                for path in folders where root.hasPrefix(path) { bump(.source(path)) }
+            }
         }
         return result
     }

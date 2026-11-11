@@ -6,6 +6,7 @@ struct RootView: View {
     /// beside the window title would be whatever it was when the view was last
     /// drawn for another reason.
     @ObservedObject private var backups = BackupManager.shared
+    @ObservedObject private var activity = LibraryActivity.shared
 
     var body: some View {
         NavigationSplitView {
@@ -66,9 +67,9 @@ struct RootView: View {
     }
 
     private var subtitle: String {
-        if model.isScanning { return model.scanProgress }
+        if model.isScanning { return activity.scanProgress }
         if model.isFetchingArtwork {
-            return "Recherche des jaquettes… \(Int(model.artworkProgress * 100)) %"
+            return "Recherche des jaquettes… \(Int(activity.artworkProgress * 100)) %"
         }
         if model.selection == .updates {
             let n = model.installedEmulators.count
@@ -97,7 +98,7 @@ struct RootView: View {
 
         ToolbarItem {
             if model.isFetchingArtwork {
-                ProgressView(value: model.artworkProgress)
+                ProgressView(value: activity.artworkProgress)
                     .progressViewStyle(.circular)
                     .controlSize(.small)
             }

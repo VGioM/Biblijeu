@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import Foundation
 
 /// Where a tile's picture comes from.
@@ -29,12 +30,15 @@ actor ArtworkCache {
 
     private let directory: URL
     private let memory = NSCache<NSString, NSImage>()
+    private let backdrops = NSCache<NSString, NSImage>()
+    private let context = CIContext(options: [.cacheIntermediates: false])
     private var inFlight: [String: Task<NSImage?, Never>] = [:]
 
     init() {
         directory = AppSettings.supportDirectory.appendingPathComponent("Artwork", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         memory.countLimit = 400
+        backdrops.countLimit = 400
     }
 
     private func filename(for key: String) -> URL {
@@ -87,7 +91,43 @@ actor ArtworkCache {
         }
     }
 
+    /// The blurred copy of a cover that fills the space around it on its tile.
+    ///
+    /// Made once, small, and kept: the tile used to blur the full-size cover
+    /// live (a 22-point Gaussian blur on a picture often 600x900), a GPU filter
+    /// every visible tile paid again on each redraw and each scroll step. A
+    /// 40-pixel copy blurred once and stretched to the tile looks the same --
+    /// behind the cover, dimmed -- for next to nothing.
+    func backdrop(for ref: ArtworkRef, from image: NSImage) -> NSImage? {
+        let key = ref.cacheKey as NSString
+        if let hit = backdrops.object(forKey: key) { return hit }
+        guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              source.width > 0, source.height > 0 else { return nil }
+
+        let width = 40
+        let height = max(1, Int((Double(source.height) * Double(width) / Double(source.width)).rounded()))
+        guard let small = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        small.interpolationQuality = .medium
+        small.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let reduced = small.makeImage() else { return nil }
+
+        // 22 points on a ~168-point tile is about 13 % of its width.
+        let input = CIImage(cgImage: reduced)
+        guard let blurred = input.clampedToExtent()
+                .applyingGaussianBlur(sigma: Double(width) * 0.13)
+                .cropped(to: input.extent) as CIImage?,
+              let output = context.createCGImage(blurred, from: input.extent) else { return nil }
+
+        let result = NSImage(cgImage: output, size: NSSize(width: width, height: height))
+        backdrops.setObject(result, forKey: key)
+        return result
+    }
+
     func clear() {
+        backdrops.removeAllObjects()
         memory.removeAllObjects()
         try? FileManager.default.removeItem(at: directory)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

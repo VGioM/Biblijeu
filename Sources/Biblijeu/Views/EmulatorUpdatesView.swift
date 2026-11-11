@@ -9,6 +9,7 @@ import SwiftUI
 struct EmulatorUpdatesView: View {
     @ObservedObject var model: LibraryModel
     @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var progress = LibraryActivity.shared
 
     var body: some View {
         // A List rather than a Form: a grouped Form keeps a leading column free
@@ -36,7 +37,7 @@ struct EmulatorUpdatesView: View {
                         if installable.count > 1 {
                             Button("Tout installer") { model.installUpdates(installable) }
                                 .controlSize(.small)
-                                .disabled(installable.contains { model.emulatorActivity[$0.id] != nil })
+                                .disabled(installable.contains { progress.emulatorActivity[$0.id] != nil })
                         }
                     }
                 }
@@ -131,7 +132,7 @@ struct EmulatorUpdatesView: View {
 
     private func row(_ row: Row, tint: Color, symbol: String) -> some View {
         let id = row.emulator.id
-        let activity = model.emulatorActivity[id]
+        let activity = progress.emulatorActivity[id]
         let problem = model.emulatorProblems[id]
         let done = model.emulatorNotes[id]
 
@@ -198,7 +199,7 @@ struct EmulatorUpdatesView: View {
     /// An emulator of the catalogue this Mac does not have, which Biblijeu
     /// can fetch from its project, install and sign.
     private func missingRow(_ spec: EmulatorSpec) -> some View {
-        let activity = model.emulatorActivity[spec.id]
+        let activity = progress.emulatorActivity[spec.id]
         let problem = model.emulatorProblems[spec.id]
         let page = spec.homepage.flatMap(URL.init(string:))
             ?? spec.updates.flatMap { URL(string: $0.page) }
@@ -228,7 +229,7 @@ struct EmulatorUpdatesView: View {
             } else {
                 Button("Installer") { model.installMissing(spec) }
                     .controlSize(.small)
-                    .disabled(!model.emulatorActivity.isEmpty)
+                    .disabled(!progress.emulatorActivity.isEmpty)
                     .help("Télécharger la dernière version de \(spec.name), l'installer et la signer")
             }
             if let page {

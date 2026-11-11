@@ -20,12 +20,7 @@ struct LibraryGridView: View {
                     message: "Ajoutez le dossier qui contient vos ROM — par exemple ~/Documents/RetroArch/downloads/ROM. Biblijeu reconnaîtra les consoles, retrouvera les jaquettes et lancera chaque jeu avec le bon émulateur.",
                     actionTitle: "Ajouter un dossier…") { model.addRomFolder() }
             } else if model.isScanning && model.items.isEmpty {
-                VStack(spacing: 14) {
-                    ProgressView().controlSize(.large)
-                    Text(model.scanProgress.isEmpty ? "Analyse…" : model.scanProgress)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ScanningPlaceholder()
             } else if model.visibleItems.isEmpty {
                 EmptyStateView(
                     symbol: model.searchText.isEmpty ? "gamecontroller" : "magnifyingglass",
@@ -266,6 +261,21 @@ struct LibraryGridView: View {
         if item.kind == .rom, emulator != nil {
             Button("Copier la commande de lancement") { model.copyCommand(item) }
         }
+    }
+}
+
+/// The first scan, before anything is found. Its own view so the progress
+/// line it follows redraws this alone, not the grid around it.
+private struct ScanningPlaceholder: View {
+    @ObservedObject private var activity = LibraryActivity.shared
+
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView().controlSize(.large)
+            Text(activity.scanProgress.isEmpty ? "Analyse…" : activity.scanProgress)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

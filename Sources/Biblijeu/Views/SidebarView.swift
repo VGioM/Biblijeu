@@ -7,18 +7,21 @@ struct SidebarView: View {
     @ObservedObject private var backups = BackupManager.shared
 
     var body: some View {
+        // Worked out once per redraw: every row reads it, and it walks the
+        // whole library.
+        let counts = model.counts
         List(selection: $model.selection) {
             Section("Bibliothèque") {
-                row(.all)
-                if (model.counts[.recent] ?? 0) > 0 { row(.recent) }
-                if (model.counts[.favorites] ?? 0) > 0 { row(.favorites) }
-                if (model.counts[.roms] ?? 0) > 0 { row(.roms) }
-                if (model.counts[.games] ?? 0) > 0 { row(.games) }
-                if (model.counts[.emulators] ?? 0) > 0 { row(.emulators) }
-                if (model.counts[.other] ?? 0) > 0 { row(.other) }
-                if (model.counts[.unplayable] ?? 0) > 0 { row(.unplayable) }
-                row(.updates)
-                row(.backups)
+                row(.all, counts: counts)
+                if (counts[.recent] ?? 0) > 0 { row(.recent, counts: counts) }
+                if (counts[.favorites] ?? 0) > 0 { row(.favorites, counts: counts) }
+                if (counts[.roms] ?? 0) > 0 { row(.roms, counts: counts) }
+                if (counts[.games] ?? 0) > 0 { row(.games, counts: counts) }
+                if (counts[.emulators] ?? 0) > 0 { row(.emulators, counts: counts) }
+                if (counts[.other] ?? 0) > 0 { row(.other, counts: counts) }
+                if (counts[.unplayable] ?? 0) > 0 { row(.unplayable, counts: counts) }
+                row(.updates, counts: counts)
+                row(.backups, counts: counts)
             }
 
             // Alphabetical here, unlike the manufacturer/year order used elsewhere:
@@ -28,7 +31,7 @@ struct SidebarView: View {
             if !systems.isEmpty {
                 Section("Consoles") {
                     ForEach(systems) { system in
-                        row(.system(system.id), title: system.name, symbol: system.symbol)
+                        row(.system(system.id), counts: counts, title: system.name, symbol: system.symbol)
                     }
                 }
             }
@@ -36,7 +39,7 @@ struct SidebarView: View {
             if settings.romFolders.count > 1 {
                 Section("Dossiers") {
                     ForEach(settings.romFolders, id: \.self) { path in
-                        row(.source(path), title: (path as NSString).lastPathComponent, symbol: "folder")
+                        row(.source(path), counts: counts, title: (path as NSString).lastPathComponent, symbol: "folder")
                             .contextMenu {
                                 Button("Retirer ce dossier") { model.removeRomFolder(path) }
                                 Button("Afficher dans le Finder") {
@@ -53,6 +56,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func row(_ section: LibrarySection,
+                     counts: [LibrarySection: Int],
                      title: String? = nil,
                      symbol: String? = nil) -> some View {
         HStack {
@@ -80,7 +84,7 @@ struct SidebarView: View {
                         .foregroundStyle(Theme.accentWarm)
                         .help("Disque de sauvegarde absent — rien n'est copié pour l'instant.")
                 }
-            } else if let count = model.counts[section], count > 0 {
+            } else if let count = counts[section], count > 0 {
                 Text("\(count)")
                     .font(.caption)
                     .foregroundStyle(.tertiary)

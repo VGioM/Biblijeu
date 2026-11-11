@@ -92,6 +92,18 @@ enum Steam {
             .filter { FileManager.default.fileExists(atPath: $0) }
     }
 
+    /// Whether a change Steam made at `path` can add or remove a game: an app
+    /// manifest at the top of a library, the list of libraries, or the games
+    /// added by hand. A path that is one of the watched folders itself means
+    /// FSEvents gave up on the detail and wants the whole folder looked at.
+    static func mayChangeGameList(at path: String, roots: [String]) -> Bool {
+        if roots.contains(path) { return true }
+        let name = (path as NSString).lastPathComponent
+        if name == "shortcuts.vdf" || name == "libraryfolders.vdf" { return true }
+        let parent = (path as NSString).deletingLastPathComponent
+        return name.hasPrefix("appmanifest_") && roots.contains(parent)
+    }
+
     /// Every game Steam can start, as the ids it starts them by: what tells a
     /// game appearing or going away from Steam merely writing to its files.
     static func knownGameIDs() -> Set<UInt64> {
