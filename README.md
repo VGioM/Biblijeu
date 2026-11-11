@@ -6,7 +6,7 @@ jaquettes, et lance chaque jeu avec le bon émulateur — en un clic.
 
 ## Télécharger
 
-**[⬇︎ Dernière version (macOS 14+, Apple Silicon)](https://github.com/VGioM/Biblijeu/releases/latest)** — décompressez, glissez Biblijeu.app dans Applications. Au premier lancement, autorisez-la dans Réglages Système → Confidentialité et sécurité → « Ouvrir quand même » (l'app n'est pas signée par Apple).
+**[⬇︎ Dernière version (macOS 14+, Apple Silicon)](https://github.com/VGioM/Biblijeu/releases/latest)** — décompressez, glissez Biblijeu.app dans Applications. Au premier lancement, autorisez-la dans Réglages Système → Confidentialité et sécurité → « Ouvrir quand même » (l'app n'est pas notarisée par Apple). Ensuite, l'app vérifie elle-même au lancement s'il existe une nouvelle version et propose de l'installer (menu de l'app → « Rechercher les mises à jour… »).
 
 ```bash
 ./build.sh          # compile dist/Biblijeu.app
@@ -599,3 +599,23 @@ libretro). Les réglages sont dans `com.biblijeu.app` (UserDefaults).
 - **Les espaces dans les URL de jaquettes.** L'encodage doit produire `%20` ;
   laisser l'espace tel quel fait échouer `URL(string:)` en silence, et la
   vignette reste vide sans erreur.
+
+## Publier une version
+
+```bash
+./signing-cert.sh        # une seule fois par Mac : crée le certificat local
+./release.sh 1.4.0       # build, tests, commit « Version 1.4.0 », tag, release GitHub
+./release.sh 1.4.0 notes.md   # avec des notes écrites à la main
+```
+
+La release contient `Biblijeu-<version>-macOS-arm64.zip`. Les apps déjà installées la
+trouvent via l'API GitHub et proposent de l'installer (`SelfUpdate.swift`, le même
+fichier dans Biblifilm, Biblijeu, Atelier NX et Recomps). Elles n'acceptent qu'une
+version signée avec le même certificat que la leur : il faut donc **garder ce
+certificat** (« Biblijeu Local Signing », dans le trousseau de session ; à exporter avec sa clé
+privée en lieu sûr). Une release signée avec un autre certificat devrait être
+réinstallée à la main par chacun.
+
+Les versions Linux et Windows à venir iront dans la même release, un fichier par
+plateforme : `<App>-<version>-linux-x86_64.tar.gz`, `<App>-<version>-windows-x64.zip`…
+La version Mac ne prend que le fichier marqué `macOS`.

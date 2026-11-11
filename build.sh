@@ -78,6 +78,9 @@ if security find-identity -p codesigning 2>/dev/null | grep -q "Biblijeu Local S
 else
     echo "▸ Signature ad hoc (lancez ./signing-cert.sh pour que macOS garde ses autorisations)…"
 fi
+# La table de débogage nomme chaque fichier source par son chemin absolu sur
+# ce Mac ; une build de release n'en a pas besoin.
+[ "$CONFIG" = "release" ] && strip -S "$APP/Contents/MacOS/Biblijeu" 2>/dev/null
 codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/Biblijeu"
 codesign --force --sign "$IDENTITY" "$APP"
 

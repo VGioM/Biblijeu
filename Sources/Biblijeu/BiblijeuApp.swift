@@ -20,6 +20,10 @@ struct BiblijeuApp: App {
         .commands {
             CommandGroup(replacing: .newItem) { }
 
+            CommandGroup(after: .appInfo) {
+                Button(SelfUpdate.menuTitle) { SelfUpdate.checkNow() }
+            }
+
             CommandGroup(after: .newItem) {
                 Button("Ajouter un dossier de ROM…") { model.addRomFolder() }
                     .keyboardShortcut("o", modifiers: .command)
@@ -71,6 +75,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         NSApp.appearance = NSAppearance(named: .darkAqua)
+
+        // Les builds de développement (et les tests E2E) ne se mettent pas à jour.
+        #if !DEBUG
+        SelfUpdate.start(repo: "VGioM/Biblijeu")
+        #endif
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
