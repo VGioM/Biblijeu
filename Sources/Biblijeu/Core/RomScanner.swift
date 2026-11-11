@@ -42,6 +42,15 @@ enum RomScanner {
     private static let sheetExtensions: Set<String> = ["cue", "gdi", "m3u", "toc"]
 
     static func scan(roots: [URL], excluded: [String] = [], progress: @escaping (String) -> Void) -> [GameItem] {
+        // The walk sees real paths, links resolved (/var is /private/var); an
+        // excluded folder written through a link would otherwise never match.
+        let excluded = excluded.flatMap { path -> [String] in
+            // realpath, not resolvingSymlinksInPath: Foundation's keeps /var.
+            guard let real = realpath(path, nil) else { return [path] }
+            defer { free(real) }
+            let resolved = String(cString: real)
+            return resolved == path ? [path] : [path, resolved]
+        }
         var items: [GameItem] = []
         for root in roots {
             guard FileManager.default.fileExists(atPath: root.path), !isExcluded(root.path, excluded) else { continue }

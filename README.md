@@ -12,6 +12,19 @@ open dist/Biblijeu.app
 
 Aucune dépendance externe : `swift build` suffit. macOS 14 minimum.
 
+```bash
+./Tests/run-unit.sh                  # tests unitaires, quelques secondes
+./Tests/run-unit.sh --filter Steam   # une seule suite
+```
+
+Les tests couvrent la reconnaissance des consoles et ce que l'analyse ignore,
+le nettoyage des noms, la comparaison des versions d'émulateurs et le choix du
+fichier Mac d'une release, la copie des sauvegardes, la lecture des fichiers de
+Steam et les disques qui relancent l'analyse. Chacun travaille dans un dossier
+temporaire : ni la bibliothèque, ni les réglages, ni les sauvegardes réelles ne
+sont touchés. Il faut Xcode 16 ou plus récent (ou ses outils en ligne de
+commande), pour Swift Testing.
+
 ---
 
 ## Ce qu'elle fait

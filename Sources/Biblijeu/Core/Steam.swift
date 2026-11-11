@@ -309,7 +309,7 @@ enum Steam {
     // MARK: - Reading Valve's key-value files
 
     /// Every value written as `"key"  "value"` in a VDF or ACF file.
-    private static func values(of key: String, in text: String) -> [String] {
+    static func values(of key: String, in text: String) -> [String] {
         let pattern = "\"" + NSRegularExpression.escapedPattern(for: key) + "\"\\s+\"((?:[^\"\\\\]|\\\\.)*)\""
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
         else { return [] }

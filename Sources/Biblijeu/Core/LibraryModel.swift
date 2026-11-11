@@ -204,14 +204,21 @@ final class LibraryModel: ObservableObject {
     /// it does.
     private func libraryUses(volume: URL?) -> Bool {
         guard let volume else { return true }
-        let root = volume.standardizedFileURL.path
-        guard root != "/" else { return true }
         let paths = settings.romFolders + settings.applicationFolders
             + settings.manualApplications + [settings.backupDestination]
             + watchedPaths + Steam.watchPaths()
-        let used = paths.contains { $0 == root || $0.hasPrefix(root + "/") }
-        if !used { scanLog.info("volume ignoré : \(root, privacy: .public)") }
+        let used = Self.volume(volume, holdsAnyOf: paths)
+        if !used { scanLog.info("volume ignoré : \(volume.path, privacy: .public)") }
         return used
+    }
+
+    /// The rule behind `libraryUses`, on its own so it can be tested: a
+    /// volume matters when one of `paths` is it or lies inside it. The startup
+    /// disk always does.
+    nonisolated static func volume(_ volume: URL, holdsAnyOf paths: [String]) -> Bool {
+        let root = volume.standardizedFileURL.path
+        guard root != "/" else { return true }
+        return paths.contains { $0 == root || $0.hasPrefix(root + "/") }
     }
 
     // MARK: - Sources
