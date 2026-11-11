@@ -1,5 +1,7 @@
 # Biblijeu
 
+> **Linux :** une version Linux (AppImage) vit dans le dossier [`linux/`](linux/README.md) de cette branche. Elle est publiée dans les mêmes [releases](https://github.com/VGioM/Biblijeu/releases), à côté du zip macOS : `Biblijeu-<version>-linux-x86_64.AppImage`.
+
 Une bibliothèque de jeux pour macOS, dans l'esprit de Biblifilm : elle regarde
 vos dossiers de ROM et vos applications, reconnaît les consoles, retrouve les
 jaquettes, et lance chaque jeu avec le bon émulateur — en un clic.
