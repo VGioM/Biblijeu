@@ -147,7 +147,6 @@ final class LibraryModel: ObservableObject {
     private var isInstalling = false
     private var isCheckingSignatures = false
     private var hasScanned = false
-    private var lastScan = Date.distantPast
     private var scanStarted = Date()
     /// What the last scan found, before the user's corrections are applied.
     private var scannedItems: [GameItem] = []
@@ -185,15 +184,12 @@ final class LibraryModel: ObservableObject {
                 .store(in: &cancellables)
         }
 
-        // Coming back to the app is the other moment worth checking: folder
-        // watching stops at the edge of what FSEvents saw while we ran.
+        // Coming back to the app does not rescan: Biblijeu is a launcher, and
+        // once the library is read it should sit still until asked (⌘R). Only
+        // the game just played is looked at -- one emulator's state folder --
+        // so its "carry on" offer is up to date.
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
-            .sink { [weak self] _ in
-                self?.rescanIfStale()
-                // The emulator has just been quit: pick up the state it wrote
-                // before the player asks to carry on.
-                self?.harvestStates()
-            }
+            .sink { [weak self] _ in self?.harvestStates() }
             .store(in: &cancellables)
     }
 
@@ -355,12 +351,6 @@ final class LibraryModel: ObservableObject {
         rescan()
     }
 
-    /// Used when the app comes forward: worth a look, but not on every switch.
-    private func rescanIfStale(after interval: TimeInterval = 60) {
-        guard hasScanned, Date().timeIntervalSince(lastScan) > interval else { return }
-        rescan()
-    }
-
     /// ROM folders that are configured but not reachable right now -- an
     /// external drive that is asleep, unplugged, or renamed.
     var unavailableFolders: [String] {
@@ -440,7 +430,6 @@ final class LibraryModel: ObservableObject {
         isScanning = false
         scanProgress = ""
         scanLog.info("analyse terminée : \(self.scannedItems.count) jeux en \(String(format: "%.1f", Date().timeIntervalSince(self.scanStarted)), privacy: .public) s")
-        lastScan = Date()
         startWatching()
         if settings.autoFetchArtwork { fetchArtwork() }
     }

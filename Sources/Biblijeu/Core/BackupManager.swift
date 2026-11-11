@@ -116,18 +116,10 @@ final class BackupManager: ObservableObject {
         // exist at all. `@Published` hands the new value to the sink, so the
         // one that just changed is read from the argument and not from the
         // object, where it has not landed yet.
-        // Coming back to Biblijeu is when something has just changed: an
-        // emulator was run for the first time and has only now created its save
-        // folder, a game wrote its first save beside the ROM, a drive was
-        // plugged in. Re-reading then is what makes the tab keep up with a
-        // library that changes without Biblijeu being told -- RPCS3 tried for
-        // the first time appears by itself, rather than when somebody thinks to
-        // press a button.
-        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
-            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refresh() }
-            .store(in: &cancellables)
-
+        // Not re-read every time the app comes forward: that walked every save
+        // folder and the ROM folders on each ⌘Tab. The list is read when the
+        // Sauvegardes tab opens, after each library scan (⌘R), and before any
+        // backup run -- which is when it matters.
         settings.$autoBackup
             .combineLatest(settings.$backupOnInterval, settings.$backupIntervalMinutes,
                            settings.$backupDestination)
