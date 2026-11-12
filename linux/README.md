@@ -3,13 +3,15 @@
 La version Linux de Biblijeu : vos dossiers de ROM, vos jeux Steam et vos applications
 dans une seule bibliothèque, les consoles reconnues, les jaquettes retrouvées, chaque
 jeu lancé avec le bon émulateur — et les sauvegardes copiées sur le disque de votre
-choix. Écrite en Electron (l'app Mac est en SwiftUI), distribuée en AppImage.
+choix. Une application native en Rust (l'app Mac est en SwiftUI), distribuée en
+AppImage d'environ 6 Mo.
 
 ## Installer
 
 Télécharger `Biblijeu-<version>-linux-x86_64.AppImage` dans les
 [releases](https://github.com/VGioM/Biblijeu/releases), le rendre exécutable
-(`chmod +x`) et le lancer. Les mises à jour se font ensuite depuis l'app (menu Aide).
+(`chmod +x`) et le lancer. Les mises à jour se font ensuite depuis l'app (menu ··· →
+Rechercher les mises à jour…, ou Réglages → Application).
 
 ## Ce qui est pareil
 
@@ -56,29 +58,55 @@ sa sauvegarde, `ThumbnailIndex/`, `prefixes/`). Les dossiers de sauvegarde du ca
 couvrent l'installation native et Flatpak (`~/.var/app/<id>/…`) ; ce que l'émulateur
 écrit lui-même dans sa configuration (`[Folders]` de DuckStation et PCSX2) passe avant.
 
+Raccourcis : Ctrl+F chercher, Ctrl+R analyser, Ctrl+, réglages, Ctrl+I panneau
+d'informations, Entrée jouer (Maj+Entrée : depuis le début), Échap désélectionner ;
+double-clic sur une jaquette pour jouer, clic droit pour le menu du jeu.
+`BIBLIJEU_SUPPORT` pointe les données ailleurs.
+
 Pas encore porté : la lecture des états DuckStation pour retrouver le disque sur lequel
 une partie a été laissée (la reprise utilise `-resume`, le fichier ou l'emplacement
 choisis), et les modes en ligne de commande `--scan`, `--updates`, `--saves`.
 
 ## Développer
 
+Une application Rust native ([egui](https://github.com/emilk/egui), rendu OpenGL,
+Wayland et X11). Il faut Rust stable, et pour l'AppImage une Fedora — sur un système
+immuable (Bazzite, Silverblue, Kinoite), un conteneur toolbox Fedora fait l'affaire :
+
 ```sh
-cd linux
-npm install
-npm start
-npm test             # analyse (mêmes cas que RomScannerTests.swift), lancement, Steam, copie
-npm run dist         # dist/Biblijeu-<version>-linux-x86_64.AppImage
+toolbox create -c rustbuild --distro fedora --release 44
+toolbox enter rustbuild
+sudo dnf install -y gcc pkgconf-pkg-config squashfs-tools patchelf \
+    wayland-devel libxkbcommon-devel libxkbcommon-x11 libX11-devel libXcursor libXrandr libXi mesa-libEGL-devel
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust, si absent
 ```
 
-- `src/shared.js` : consoles, émulateurs, noms de dumps, sections
-- `src/scanner.js` : `RomScanner`, `SwitchTitle`, applications `.desktop`
-- `src/emulators.js` : détection et commandes, Proton
-- `src/steam.js` : bibliothèques, manifestes, `shortcuts.vdf`, jaquettes, Proton installés
-- `src/artwork.js` : libretro et SteamGridDB
-- `src/backup.js` : catalogue des sauvegardes et moteur de copie
+Puis, dans `linux/` :
+
+```sh
+cargo run --release      # lance l'app
+cargo test               # tests unitaires
+./build-appimage.sh      # dist/Biblijeu-<version>-linux-x86_64.AppImage
+```
+
+`build-appimage.sh` compile, copie dans l'AppImage les bibliothèques dont le programme
+a besoin — jamais la glibc, les pilotes graphiques, le son ni les bibliothèques de
+base du bureau, qui restent celles du système — et la compresse (squashfs xz). Le
+« runtime » AppImage placé en tête est pris dans `APPIMAGE_RUNTIME` (par défaut : celui
+qu'electron-builder a mis en cache).
+
+`src/common/` est le même dossier dans Biblifilm, Biblijeu et Recomps : thème, icônes,
+cache des jaquettes (disque `~/.cache/Biblijeu/`, mémoire bornée), fenêtres de choix
+(portail XDG), réglages, mise à jour intégrée (`selfupdate.rs`, l'équivalent de
+`SelfUpdate.swift` : elle ne prend que le fichier `-linux-x86_64.AppImage` de la
+release, vérifie son empreinte SHA-256 publiée par GitHub, puis remplace l'AppImage).
 
 ## Publier
 
 ```sh
-cd linux && ./release-linux.sh 1.4.0   # ajoute l'AppImage à la release v1.4.0 existante
+./release.sh 1.4.0                      # sur main, sur un Mac : la release et le zip macOS
+cd linux && ./release-linux.sh 1.4.0    # ici : ajoute l'AppImage à cette release
 ```
+
+La version Mac ne prend que le fichier marqué `macOS`, la version Linux que
+`-linux-x86_64.AppImage` : les deux vivent dans la même release sans se gêner.

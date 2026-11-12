@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Biblijeu
+Comment=Bibliothèque de jeux : ROM, jeux Steam, jeux Windows avec Proton, émulateurs et sauvegardes
+Exec=biblijeu
+Icon=biblijeu
+Categories=Game;
+StartupWMClass=biblijeu
+Terminal=false
