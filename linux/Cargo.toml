@@ -1,6 +1,6 @@
 [package]
 name = "biblijeu"
-version = "1.3.4"
+version = "1.3.5"
 edition = "2021"
 description = "Bibliothèque de jeux : ROM, jeux Steam, jeux Windows avec Proton, émulateurs et sauvegardes"
 license = "UNLICENSED"
