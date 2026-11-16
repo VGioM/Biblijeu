@@ -61,9 +61,10 @@ pub static SYSTEMS: &[System] = &[
     sys!("c64", "Commodore 64", "C64", "Commodore", "pc", 1982, Some("Commodore - 64"), ["d64", "t64", "tap", "prg", "crt"], ["c64", "commodore 64"], ["retroarch"]),
     sys!("doom", "Doom", "Doom", "PC", "flame", 1993, Some("DOOM"), ["wad", "iwad", "pk3", "ipk3", "pk7"], ["doom", "wads"], ["uzdoom", "gzdoom", "retroarch"]),
     sys!("dos", "MS-DOS", "DOS", "PC", "terminal", 1981, Some("DOS"), ["dosz", "conf"], ["dos", "msdos", "ms-dos"], ["dosbox", "dosboxstaging", "retroarch"]),
-    // Les jeux Windows passent par Proton, celui que Steam a installé.
-    sys!("windows", "Jeu Windows", "Windows", "PC", "windows", 1995, None, ["exe", "msi", "bat", "lnk"], ["pc", "windows", "win"], ["proton"]),
-    sys!("linux", "Jeu Linux", "Linux", "PC", "linux", 2000, None, ["appimage", "x86_64", "sh"], ["linux"], []),
+    // Les jeux Windows se lancent tels quels.
+    sys!("windows", "Jeu Windows", "Windows", "PC", "windows", 1995, None, ["exe", "msi", "bat", "lnk", "url"], ["pc", "windows", "win"], []),
+    // Gardé pour les réglages venus d'une version Linux ; rien n'est reconnu comme tel ici.
+    sys!("linux", "Jeu Linux", "Linux", "PC", "linux", 2000, None, [], ["linux"], []),
 ];
 
 pub fn system(id: &str) -> Option<&'static System> { SYSTEMS.iter().find(|s| s.id == id) }

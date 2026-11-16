@@ -8,7 +8,6 @@
 
 use crate::catalog::{self, Item, Kind, System};
 use std::collections::{HashMap, HashSet};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Tri naturel (« Proton 10 » après « Proton 9 »).
@@ -218,17 +217,7 @@ fn installed_launcher(dir: &Path, files: &[F]) -> Option<(PathBuf, &'static str)
         cand.sort_by(|a, b| score_launcher(&b.path, &folder).cmp(&score_launcher(&a.path, &folder)).then(b.meta.len().cmp(&a.meta.len())));
         return Some((cand[0].path.clone(), "windows"));
     }
-    // Un jeu Linux : un programme ELF exécutable (ou un .x86_64, un start.sh) à la racine.
-    // Une AppImage, elle, est un jeu à elle seule : elle ne désigne pas son dossier.
-    let mut natives: Vec<&F> = files.iter().filter(|f| {
-        let l = f.name.to_lowercase();
-        f.meta.is_file() && f.meta.permissions().mode() & 0o111 != 0 && !l.contains(".so") && !l.ends_with(".dll") && !l.ends_with(".py") && !l.ends_with(".pl")
-            && (l.ends_with(".x86_64") || (l.ends_with(".sh") && ["start", "run", "launch"].iter().any(|w| l.starts_with(w))) || (!l.contains('.') && is_elf(&f.path)))
-            && !NOISE.iter().any(|w| l.contains(w))
-    }).collect();
-    if natives.is_empty() { return None; }
-    natives.sort_by(|a, b| score_launcher(&b.path, &folder).cmp(&score_launcher(&a.path, &folder)).then(b.meta.len().cmp(&a.meta.len())));
-    Some((natives[0].path.clone(), "linux"))
+    None
 }
 
 fn games_in(dir: &Path, files: &[F], root: &Path) -> Vec<Item> {
@@ -244,7 +233,7 @@ fn games_in(dir: &Path, files: &[F], root: &Path) -> Vec<Item> {
         if ["exe", "msi", "bat", "lnk"].contains(&e) && !plausible_exe(&f.path, dir) { continue; }
         // Un .zip n'est un jeu d'arcade que là où le dossier le dit.
         if (e == "zip" || e == "7z") && folder_hints(&f.path, root).first().map(|s| s.id) != Some("arcade") { continue; }
-        if e == "sh" && f.meta.permissions().mode() & 0o111 == 0 { continue; }
+        if e == "sh" { continue; }
         if f.name.starts_with("._") { continue; }
         let Some(s) = resolve_system(&f.path, e, root) else { continue };
         if s.id == "switch" && !switch_base(&f.path) { continue; }
@@ -322,93 +311,61 @@ pub fn scan_roms(roots: &[String], ex: &[String], progress: &dyn Fn(String)) -> 
     group_multi_disc(items)
 }
 
-// ── Applications (.desktop) ───────────────────────────────────────────────
+// ── Applications (menu Démarrer) ──────────────────────────────────────────
 
-fn data_dirs() -> Vec<PathBuf> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let mut v = vec![std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or(home.join(".local/share"))];
-    v.extend(std::env::var("XDG_DATA_DIRS").unwrap_or("/usr/local/share:/usr/share".into()).split(':').map(PathBuf::from));
-    v.push(home.join(".local/share/flatpak/exports/share"));
-    v.push("/var/lib/flatpak/exports/share".into());
-    let mut seen = HashSet::new();
-    v.into_iter().filter(|p| seen.insert(p.clone())).collect()
-}
+/// Gardé pour la compatibilité avec les réglages Linux : il n'y a pas de .desktop ici.
+pub fn parse_desktop(_p: &Path) -> Option<HashMap<String, String>> { None }
 
-pub fn parse_desktop(p: &Path) -> Option<HashMap<String, String>> {
-    let t = std::fs::read_to_string(p).ok()?;
-    let mut out = HashMap::new();
-    let mut main = false;
-    for l in t.lines() {
-        if l.starts_with('[') { main = l.trim() == "[Desktop Entry]"; continue; }
-        if !main { continue; }
-        if let Some((k, v)) = l.split_once('=') { out.entry(k.trim().to_string()).or_insert(v.trim().to_string()); }
-    }
-    Some(out)
-}
-
-/// L'icône d'une application, d'après son nom dans le thème (la plus grande trouvée).
-pub fn find_icon(name: &str) -> Option<PathBuf> {
-    if name.is_empty() { return None; }
-    if name.starts_with('/') { return Path::new(name).exists().then(|| PathBuf::from(name)); }
-    let mut best: Option<(i32, PathBuf)> = None;
-    for base in data_dirs() {
-        for theme in ["hicolor", "breeze", "Adwaita"] {
-            let Ok(rd) = std::fs::read_dir(base.join("icons").join(theme)) else { continue };
-            for s in rd.flatten() {
-                let size = if s.file_name() == "scalable" { 10000 } else { s.file_name().to_string_lossy().split('x').next().and_then(|x| x.parse().ok()).unwrap_or(0) };
-                for ext in ["png", "svg"] {
-                    let f = s.path().join("apps").join(format!("{name}.{ext}"));
-                    if f.exists() && best.as_ref().map(|b| size > b.0).unwrap_or(true) { best = Some((size, f)); }
-                }
-            }
-        }
-        for ext in ["png", "svg"] { let f = base.join("pixmaps").join(format!("{name}.{ext}")); if best.is_none() && f.exists() { best = Some((0, f)); } }
-    }
-    best.map(|b| b.1)
+/// Les dossiers « Programmes » du menu Démarrer : celui de l'utilisateur et celui de tous.
+fn start_menus() -> Vec<PathBuf> {
+    let mut v = vec![];
+    if let Some(a) = std::env::var_os("APPDATA") { v.push(PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs")); }
+    if let Some(a) = std::env::var_os("ProgramData") { v.push(PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs")); }
+    v
 }
 
 pub struct Apps { pub games: Vec<Item>, pub emu_icons: HashMap<String, (PathBuf, Option<PathBuf>)> }
 
-/// Les jeux (Categories=Game) et lanceurs installés, et les .desktop des émulateurs.
+/// Les lanceurs de jeux et les jeux du menu Démarrer : les raccourcis rangés dans
+/// un dossier de jeux ou d'un magasin (Epic, GOG, EA, Ubisoft…), et les lanceurs
+/// eux-mêmes. Steam n'y est pas lu : ses jeux viennent de sa bibliothèque.
 pub fn scan_applications() -> Apps {
-    let launchers = ["com.heroicgameslauncher.hgl", "net.lutris.Lutris", "com.usebottles.bottles", "io.itch.itch", "com.hypixel.HytaleLauncher", "com.valvesoftware.Steam", "steam"];
-    let not_games = ["big picture", "steam-runtime", "valve-", "steamvr", "proton", "protontricks", "winetricks", "gamemode", "mangohud", "controller", "piper",
-        "solaar", "antimicrox", "sunshine", "moonlight", "protonplus", "pupgui", "dosbox-x-conf"];
+    let launchers = ["epic games launcher", "gog galaxy", "ubisoft connect", "ea", "ea app", "battle.net", "heroic games launcher", "itch", "playnite",
+        "amazon games", "xbox", "riot client", "rockstar games launcher", "steam"];
+    let game_dirs = ["games", "jeux", "gog.com", "gog galaxy", "epic games", "ubisoft", "ea", "electronic arts", "rockstar games", "itch", "heroic"];
+    let not_games = ["uninstall", "désinstaller", "desinstaller", "readme", "manual", "manuel", "support", "website", "site web", "settings", "config",
+        "help", "aide", "license", "licence", "redist", "update", "server", "serveur", "editor", "dedicated"];
     let mut games = vec![];
-    let mut emu_icons = HashMap::new();
     let mut seen = HashSet::new();
-    for base in data_dirs() {
-        let Ok(rd) = std::fs::read_dir(base.join("applications")) else { continue };
+    fn walk(d: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
         for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().to_string();
-            if !n.ends_with(".desktop") || !seen.insert(n.clone()) { continue; }
-            let Some(d) = parse_desktop(&e.path()) else { continue };
-            let g = |k: &str| d.get(k).cloned().unwrap_or_default();
-            if g("Type") != "Application" || g("NoDisplay") == "true" || g("Hidden") == "true" || g("Exec").is_empty() { continue; }
-            let id = n.trim_end_matches(".desktop").to_string();
-            let exec = g("Exec");
-            // Les raccourcis que Steam crée pour ses jeux : Steam les connaît déjà.
-            if exec.contains("steam://rungameid/") { continue; }
-            let prog = exec.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string();
-            if let Some(em) = catalog::EMULATORS.iter().find(|em| em.flatpak.contains(&id.as_str()) || (!prog.is_empty() && em.bins.contains(&prog.as_str()))) {
-                emu_icons.insert(em.id.to_string(), (e.path(), find_icon(&g("Icon"))));
-                continue;
-            }
-            let cats: Vec<String> = g("Categories").split(';').map(String::from).collect();
-            let name = if g("Name").is_empty() { id.clone() } else { g("Name") };
-            let game = cats.iter().any(|c| c == "Game") && !cats.iter().any(|c| c == "Emulator");
-            if !(game || launchers.iter().any(|l| id.starts_with(l))) { continue; }
-            let lname = format!("{} {}", id.to_lowercase(), name.to_lowercase());
-            if not_games.iter().any(|w| lname.contains(w)) || cats.iter().any(|c| c == "Settings" || c == "System") { continue; }
-            let added = e.metadata().map(|m| mtime(&m)).unwrap_or(0);
+            let p = e.path();
+            if p.is_dir() { if depth < 2 { walk(&p, depth + 1, out); } }
+            else if p.extension().map(|x| x.eq_ignore_ascii_case("lnk") || x.eq_ignore_ascii_case("url")).unwrap_or(false) { out.push(p); }
+        }
+    }
+    for base in start_menus() {
+        let mut links = vec![];
+        walk(&base, 0, &mut links);
+        for l in links {
+            let name = l.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let lname = name.to_lowercase();
+            let folder = l.parent().filter(|p| *p != base).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let launcher = launchers.contains(&lname.as_str());
+            let in_games = game_dirs.iter().any(|g| folder == *g || folder.starts_with(&format!("{g} ")));
+            if !(launcher || in_games) || not_games.iter().any(|w| lname.contains(w)) { continue; }
+            if catalog::EMULATORS.iter().any(|em| catalog::normalize(em.name) == catalog::normalize(&name)) { continue; }
+            if !seen.insert(lname.clone()) { continue; }
+            let added = std::fs::metadata(&l).map(|m| mtime(&m)).unwrap_or(0);
             games.push(Item {
-                id: fnv(&format!("desktop:{id}")), kind: Kind::Game, sort_title: catalog::normalize(&name), title: name.clone(), system: "linux".into(),
-                path: e.path(), discs: vec![], region: None, languages: vec![], tags: vec![], size: 0, added, source_root: None, raw_name: name,
-                local_art: find_icon(&g("Icon")), steam_id: None, desktop_exec: Some(exec), version: None, emulator_id: None,
+                id: fnv(&format!("startmenu:{lname}")), kind: Kind::Game, sort_title: catalog::normalize(&name), title: name.clone(), system: "windows".into(),
+                path: l.clone(), discs: vec![], region: None, languages: vec![], tags: vec![], size: 0, added, source_root: None, raw_name: name,
+                local_art: None, steam_id: None, desktop_exec: None, version: None, emulator_id: None,
             });
         }
     }
-    Apps { games, emu_icons }
+    Apps { games, emu_icons: HashMap::new() }
 }
 
 #[cfg(test)]
@@ -417,7 +374,7 @@ mod tests {
     struct Fx { root: PathBuf }
     impl Fx {
         fn new() -> Fx { let r = std::env::temp_dir().join(format!("bj-{}-{}", std::process::id(), crate::common::sys::now_ms() + rand())); std::fs::create_dir_all(&r).unwrap(); Fx { root: r } }
-        fn file(&self, rel: &str, content: &[u8], mode: Option<u32>) { let p = self.root.join(rel); std::fs::create_dir_all(p.parent().unwrap()).unwrap(); std::fs::write(&p, content).unwrap(); if let Some(m) = mode { std::fs::set_permissions(&p, std::fs::Permissions::from_mode(m)).unwrap(); } }
+        fn file(&self, rel: &str, content: &[u8], mode: Option<u32>) { let p = self.root.join(rel); std::fs::create_dir_all(p.parent().unwrap()).unwrap(); std::fs::write(&p, content).unwrap(); let _ = mode; }
         fn scan(&self, ex: &[String]) -> Vec<Item> { scan_roms(&[self.root.to_string_lossy().into()], ex, &|_| {}) }
     }
     fn rand() -> i64 { static N: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0); N.fetch_add(1000, std::sync::atomic::Ordering::SeqCst) }
@@ -472,17 +429,6 @@ mod tests {
         let mut v: Vec<(String, String)> = items.iter().map(|i| (i.system.clone(), i.path.file_name().unwrap().to_string_lossy().into())).collect();
         v.sort();
         assert_eq!(v, vec![("arcade".into(), "pacman.zip".into()), ("windows".into(), "ObsidianQuest.exe".into())]);
-    }
-    #[test]
-    fn linux_games() {
-        let f = Fx::new();
-        let mut elf = vec![0x7f, b'E', b'L', b'F']; elf.extend([0u8; 60]);
-        f.file("Linux/Hollow Quest/HollowQuest", &elf, Some(0o755));
-        f.file("Linux/Hollow Quest/libfoo.so", &elf, Some(0o755));
-        f.file("Linux/Celeste.AppImage", b"x", Some(0o755));
-        let mut names: Vec<String> = f.scan(&[]).iter().map(|i| i.path.file_name().unwrap().to_string_lossy().into()).collect();
-        names.sort();
-        assert_eq!(names, vec!["Celeste.AppImage", "HollowQuest"]);
     }
     #[test]
     fn excluded_and_changes() {

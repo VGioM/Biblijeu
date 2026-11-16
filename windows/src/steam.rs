@@ -1,17 +1,19 @@
-//! Ce que le client Steam pour Linux sait : ses bibliothèques, les jeux
-//! installés (lancés par Steam, avec le Proton choisi pour eux), les jeux
-//! ajoutés à la main, les jaquettes déjà téléchargées, et les Proton qu'il a
-//! installés. Traduction de Steam.swift.
+//! Ce que le client Steam pour Windows sait : ses bibliothèques, les jeux
+//! installés (lancés par Steam), les jeux ajoutés à la main et les jaquettes
+//! déjà téléchargées. Traduction de Steam.swift.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-fn home() -> PathBuf { dirs::home_dir().unwrap_or_default() }
 
-/// Le dossier de Steam : natif, lien ~/.steam/steam, ou Flatpak.
+/// Le dossier de Steam : celui que Steam écrit dans le registre
+/// (HKCU\Software\Valve\Steam, SteamPath), sinon l'emplacement habituel.
 pub fn root() -> Option<PathBuf> {
-    [home().join(".local/share/Steam"), home().join(".steam/steam"), home().join(".var/app/com.valvesoftware.Steam/.local/share/Steam")]
-        .into_iter().find(|p| p.join("steamapps").exists()).and_then(|p| std::fs::canonicalize(p).ok())
+    let reg = crate::common::sys::clean_command("reg").args(["query", r"HKCU\Software\Valve\Steam", "/v", "SteamPath"]).output().ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().find_map(|l| l.split_once("REG_SZ").map(|(_, v)| PathBuf::from(v.trim().replace('/', "\\")))));
+    let env = |k: &str| std::env::var_os(k).map(|p| PathBuf::from(p).join("Steam"));
+    reg.into_iter().chain([env("ProgramFiles(x86)"), env("ProgramFiles")].into_iter().flatten())
+        .find(|p| p.join("steamapps").exists())
 }
 
 /// Toutes les valeurs écrites `"clé"  "valeur"` dans un fichier VDF ou ACF.
@@ -159,29 +161,11 @@ pub fn shortcut_cover(s: &Shortcut) -> Option<PathBuf> {
 #[derive(Clone, Debug)]
 pub struct Proton { pub name: String, pub dir: PathBuf }
 
-/// Les Proton installés par Steam : ceux des bibliothèques (Proton - Experimental,
-/// Proton 10.0…) et ceux de compatibilitytools.d (GE-Proton…). Experimental
-/// d'abord, puis les plus récents.
-pub fn protons() -> Vec<Proton> {
-    let mut out: Vec<Proton> = vec![];
-    let mut add = |dir: PathBuf, name: String| { if dir.join("proton").exists() && !out.iter().any(|p| p.name == name) { out.push(Proton { name, dir }); } };
-    for lib in libraries() {
-        if let Ok(rd) = std::fs::read_dir(lib.join("common")) {
-            for e in rd.flatten() { let n = e.file_name().to_string_lossy().to_string(); if n.starts_with("Proton") && !n.contains("Runtime") { add(e.path(), n); } }
-        }
-    }
-    for base in [root().map(|r| r.join("compatibilitytools.d")), Some(home().join(".steam/root/compatibilitytools.d"))].into_iter().flatten() {
-        if let Ok(rd) = std::fs::read_dir(base) { for e in rd.flatten() { add(e.path(), e.file_name().to_string_lossy().to_string()); } }
-    }
-    let rank = |p: &Proton| if p.name == "Proton - Experimental" { 2 } else if p.name.to_lowercase().contains("hotfix") { 0 } else { 1 };
-    out.sort_by(|a, b| rank(b).cmp(&rank(a)).then_with(|| crate::scanner::natural(&b.name, &a.name)));
-    out
-}
+/// Pas de Proton sous Windows : les jeux s'y lancent tels quels.
+pub fn protons() -> Vec<Proton> { vec![] }
 
-/// Le conteneur Steam Linux Runtime (sniper), dans lequel Steam lance Proton.
-pub fn sniper() -> Option<PathBuf> {
-    libraries().into_iter().map(|l| l.join("common/SteamLinuxRuntime_sniper/_v2-entry-point")).find(|p| p.exists())
-}
+/// Pas de Steam Linux Runtime sous Windows.
+pub fn sniper() -> Option<PathBuf> { None }
 
 #[cfg(test)]
 mod tests {

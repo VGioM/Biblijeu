@@ -125,7 +125,7 @@ impl App {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let dir = store::support_dir("Biblijeu", Some("BIBLIJEU_SUPPORT"));
         let h = home();
-        let app_folders: Vec<String> = ["Applications", "AppImages", "Games", "Emulation", ".local/bin"].iter().map(|x| h.join(x).to_string_lossy().to_string()).collect();
+        let app_folders: Vec<String> = ["Emulation", "Emulateurs", "Emulators", "Games", "Jeux"].iter().map(|x| h.join(x).to_string_lossy().to_string()).collect();
         let prefixes = dir.join("prefixes").to_string_lossy().to_string();
         let settings = Settings::new(dir.join("settings.json"), json!({
             "romFolders": [], "excludedFolders": [],
@@ -207,11 +207,11 @@ impl App {
                 let Ok(m) = std::fs::metadata(&path) else { continue };
                 if p.ends_with(".desktop") && apps.games.iter().any(|g| g.path == path) { continue; }
                 let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                let title = ["appimage", "x86_64", "sh"].iter().fold(name.clone(), |t, e| {
+                let title = ["exe", "lnk", "url", "bat"].iter().fold(name.clone(), |t, e| {
                     let l = t.to_lowercase(); if l.ends_with(&format!(".{e}")) { t[..t.len() - e.len() - 1].to_string() } else { t }
                 });
                 found.insert(0, Item { id: scanner::identifier(&path, Some(m.len())), kind: Kind::Game, sort_title: catalog::normalize(&name), title,
-                    system: if p.to_lowercase().ends_with(".exe") { "windows".into() } else { "linux".into() }, path, discs: vec![], region: None, languages: vec![],
+                    system: "windows".into(), path, discs: vec![], region: None, languages: vec![],
                     tags: vec![], size: m.len(), added: mtime(&m), source_root: None, raw_name: name, local_art: None, steam_id: None, desktop_exec: None, version: None, emulator_id: None });
             }
             report("Recherche des émulateurs…".into());
@@ -507,7 +507,7 @@ impl App {
     pub fn backup_root(&self) -> Option<PathBuf> { let d = self.settings.string("backupDestination"); (!d.is_empty()).then(|| PathBuf::from(d).join(backup::FOLDER_NAME)) }
     pub fn destination_available(&self) -> bool { let d = self.settings.string("backupDestination"); !d.is_empty() && backup::is_dir(Path::new(&d)) }
     pub fn emulator_name(id: &str) -> String {
-        if id == backup::ROMS_ID { "Dossiers de ROM".into() } else if id == "proton" { "Jeux Windows (Proton)".into() } else { catalog::emulator(id).map(|e| e.name.to_string()).unwrap_or(id.into()) }
+        if id == backup::ROMS_ID { "Dossiers de ROM".into() } else if id == "proton" { "Jeux Windows".into() } else { catalog::emulator(id).map(|e| e.name.to_string()).unwrap_or(id.into()) }
     }
 
     pub fn refresh_backups(&mut self, ctx: &egui::Context) {
@@ -789,7 +789,7 @@ fn merge_steam(mut items: Vec<Item>, games: Vec<steam::Game>, shortcuts: Vec<ste
             items = items.into_iter().enumerate().filter(|(i, _)| !drop.contains(i)).map(|(_, x)| x).collect();
         } else {
             let added = std::fs::metadata(&g.folder).map(|m| mtime(&m)).unwrap_or(0);
-            let sys = if has_exe(&g.folder, 0) { "windows" } else { "linux" };
+            let sys = "windows";
             items.push(blank(scanner::hash(&format!("steam:{}", g.app_id)), &g.name, sys, g.folder.clone(), added, cover, g.app_id.to_string()));
         }
     }
@@ -801,7 +801,7 @@ fn merge_steam(mut items: Vec<Item>, games: Vec<steam::Game>, shortcuts: Vec<ste
         } else {
             let l = s.exe.to_string_lossy().to_lowercase();
             let win = [".exe", ".bat", ".msi", ".lnk"].iter().any(|e| l.ends_with(e));
-            items.push(blank(scanner::hash(&format!("steamshortcut:{}", s.game_id)), &s.name, if win { "windows" } else { "linux" }, s.exe.clone(), 0, cover, s.game_id.clone()));
+            items.push(blank(scanner::hash(&format!("steamshortcut:{}", s.game_id)), &s.name, { let _ = win; "windows" }, s.exe.clone(), 0, cover, s.game_id.clone()));
         }
     }
     items

@@ -1,4 +1,5 @@
-//! Biblijeu pour Linux : la bibliothèque de jeux — ROM rangées par console, jeux
+#![windows_subsystem = "windows"]
+//! Biblijeu pour Windows : la bibliothèque de jeux — ROM rangées par console, jeux
 //! Steam, jeux Windows lancés avec Proton, émulateurs (Flatpak, paquets,
 //! AppImage), jaquettes et sauvegardes.
 
@@ -13,6 +14,7 @@ mod steam;
 mod views;
 
 fn main() -> eframe::Result {
+    common::selfupdate::cleanup_old();
     let icon = image::load_from_memory(include_bytes!("../resources/icon.png")).ok().map(|i| {
         let i = i.to_rgba8();
         let (w, h) = i.dimensions();

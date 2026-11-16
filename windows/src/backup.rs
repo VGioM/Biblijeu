@@ -1,5 +1,5 @@
 //! L'onglet « Sauvegarde » : où chaque émulateur range ses sauvegardes sur
-//! Linux (natif ou Flatpak, dans ~/.var/app), et la copie incrémentale vers le
+//! Windows (Documents, AppData, ou à côté de son .exe quand il est portable), et la copie incrémentale vers le
 //! disque choisi. Rien n'est jamais supprimé ; la partie la plus récente gagne ;
 //! aucune ROM n'est copiée ; les liens symboliques ne sont ni suivis ni copiés ;
 //! la copie n'entre jamais dans son propre dossier.
@@ -26,7 +26,11 @@ pub const MANIFEST: &str = "Biblijeu.json";
 struct Ini { file: String, section: &'static str, key: &'static str, relative_to: String }
 struct Spec { kind: &'static str, candidates: Vec<String>, slug: Option<&'static str>, label: Option<&'static str>, only: &'static [&'static str], excluding: &'static [&'static str], settings: Vec<Ini> }
 
-fn fp(id: &str, sub: &str) -> String { format!(".var/app/{id}/{sub}") }
+/// Le dossier de l'exe d'un émulateur détecté, suivi de `sub` : c'est là que vit
+/// une installation portable (RetroArch, RPCS3, DuckStation avec portable.txt…).
+fn ex(id: &str, sub: &str) -> Option<String> {
+    crate::emulators::exe_dir(id).map(|d| d.join(sub).to_string_lossy().to_string())
+}
 fn sp(kind: &'static str, c: &[String]) -> Spec { Spec { kind, candidates: c.to_vec(), slug: None, label: None, only: &[], excluding: &[], settings: vec![] } }
 impl Spec {
     fn slug(mut self, s: &'static str, l: &'static str) -> Self { self.slug = Some(s); self.label = Some(l); self }
@@ -38,83 +42,77 @@ impl Spec {
 macro_rules! v { ($($e:expr),*) => { vec![$($e.to_string()),*] }; }
 
 fn catalog() -> Vec<(&'static str, Vec<Spec>)> {
-    let dol = "org.DolphinEmu.dolphin-emu";
-    let duck = "org.duckstation.DuckStation";
-    let p2 = "net.pcsx2.PCSX2";
-    let ryu = ["io.github.ryubing.Ryujinx", "org.ryujinx.Ryujinx"];
-    let three = |dir: &str, id: &str| vec![
-        sp("sdCard", &v![format!(".local/share/{dir}/sdmc"), fp(id, &format!("data/{dir}/sdmc"))]).slug("sdmc", "Carte SD virtuelle"),
-        sp("systemMemory", &v![format!(".local/share/{dir}/nand"), fp(id, &format!("data/{dir}/nand"))]),
-        sp("states", &v![format!(".local/share/{dir}/states"), fp(id, &format!("data/{dir}/states"))]),
+    // Les chemins relatifs partent du dossier de l'utilisateur ; `ex(…)` donne
+    // celui de l'émulateur portable, essayé d'abord.
+    let c = |portable: Vec<Option<String>>, std: &[&str]| -> Vec<String> {
+        portable.into_iter().flatten().chain(std.iter().map(|s| s.to_string())).collect()
+    };
+    let three = |id: &str, dir: &str| vec![
+        sp("sdCard", &c(vec![ex(id, "user/sdmc")], &[&format!("AppData/Roaming/{dir}/sdmc")])).slug("sdmc", "Carte SD virtuelle"),
+        sp("systemMemory", &c(vec![ex(id, "user/nand")], &[&format!("AppData/Roaming/{dir}/nand")])),
+        sp("states", &c(vec![ex(id, "user/states")], &[&format!("AppData/Roaming/{dir}/states")])),
     ];
-    let nx = |n: &str| vec![sp("saves", &v![format!(".local/share/{n}/nand/user/save")]), sp("sdCard", &v![format!(".local/share/{n}/sdmc")])];
-    let up = "pfx/drive_c/users/steamuser";
+    let nx = |id: &str, n: &str| vec![
+        sp("saves", &c(vec![ex(id, "user/nand/user/save")], &[&format!("AppData/Roaming/{n}/nand/user/save")])),
+        sp("sdCard", &c(vec![ex(id, "user/sdmc")], &[&format!("AppData/Roaming/{n}/sdmc")])),
+    ];
+    let duck = ["Documents/DuckStation", "AppData/Local/DuckStation"];
     vec![
         ("dolphin", vec![
-            sp("memoryCards", &v![".local/share/dolphin-emu/GC", fp(dol, "data/dolphin-emu/GC")]),
-            sp("systemMemory", &v![".local/share/dolphin-emu/Wii", fp(dol, "data/dolphin-emu/Wii")]),
-            sp("states", &v![".local/share/dolphin-emu/StateSaves", fp(dol, "data/dolphin-emu/StateSaves")]),
-            sp("saves", &v![".local/share/dolphin-emu/GBA", fp(dol, "data/dolphin-emu/GBA")]).slug("gba", "Sauvegardes Game Boy Advance"),
+            sp("memoryCards", &c(vec![ex("dolphin", "User/GC")], &["AppData/Roaming/Dolphin Emulator/GC", "Documents/Dolphin Emulator/GC"])),
+            sp("systemMemory", &c(vec![ex("dolphin", "User/Wii")], &["AppData/Roaming/Dolphin Emulator/Wii", "Documents/Dolphin Emulator/Wii"])),
+            sp("states", &c(vec![ex("dolphin", "User/StateSaves")], &["AppData/Roaming/Dolphin Emulator/StateSaves", "Documents/Dolphin Emulator/StateSaves"])),
+            sp("saves", &c(vec![ex("dolphin", "User/GBA")], &["AppData/Roaming/Dolphin Emulator/GBA", "Documents/Dolphin Emulator/GBA"])).slug("gba", "Sauvegardes Game Boy Advance"),
         ]),
-        ("cemu", vec![sp("saves", &v![".local/share/Cemu/mlc01/usr/save", fp("info.cemu.Cemu", "data/Cemu/mlc01/usr/save")])]),
+        ("cemu", vec![sp("saves", &c(vec![ex("cemu", "mlc01/usr/save")], &["AppData/Roaming/Cemu/mlc01/usr/save"]))]),
         ("ryujinx", vec![
-            sp("saves", &v![".config/Ryujinx/bis/user/save", fp(ryu[0], "config/Ryujinx/bis/user/save"), fp(ryu[1], "config/Ryujinx/bis/user/save")]),
+            sp("saves", &c(vec![ex("ryujinx", "portable/bis/user/save")], &["AppData/Roaming/Ryujinx/bis/user/save"])),
             // Ce qui dit à quel jeu appartient chaque dossier numéroté : inutile seul, indispensable avec.
-            sp("saves", &v![".config/Ryujinx/bis/user/saveMeta", fp(ryu[0], "config/Ryujinx/bis/user/saveMeta"), fp(ryu[1], "config/Ryujinx/bis/user/saveMeta")]).slug("saveMeta", "Index des sauvegardes"),
-            sp("sdCard", &v![".config/Ryujinx/sdcard", fp(ryu[0], "config/Ryujinx/sdcard")]),
+            sp("saves", &c(vec![ex("ryujinx", "portable/bis/user/saveMeta")], &["AppData/Roaming/Ryujinx/bis/user/saveMeta"])).slug("saveMeta", "Index des sauvegardes"),
+            sp("sdCard", &c(vec![ex("ryujinx", "portable/sdcard")], &["AppData/Roaming/Ryujinx/sdcard"])),
         ]),
-        ("eden", nx("eden")), ("citron", nx("citron")), ("sudachi", nx("sudachi")),
-        ("yuzu", vec![sp("saves", &v![".local/share/yuzu/nand/user/save", fp("org.yuzu_emu.yuzu", "data/yuzu/nand/user/save")]), sp("sdCard", &v![".local/share/yuzu/sdmc"])]),
+        ("eden", nx("eden", "eden")), ("citron", nx("citron", "citron")), ("sudachi", nx("sudachi", "sudachi")), ("yuzu", nx("yuzu", "yuzu")),
         ("duckstation", vec![
-            sp("memoryCards", &v![".local/share/duckstation/memcards", fp(duck, "config/duckstation/memcards")])
-                .ini(".local/share/duckstation/settings.ini".into(), "Folders", "MemoryCards", ".local/share/duckstation".into())
-                .ini(fp(duck, "config/duckstation/settings.ini"), "Folders", "MemoryCards", fp(duck, "config/duckstation")),
-            sp("states", &v![".local/share/duckstation/savestates", fp(duck, "config/duckstation/savestates")])
-                .ini(".local/share/duckstation/settings.ini".into(), "Folders", "SaveStates", ".local/share/duckstation".into())
-                .ini(fp(duck, "config/duckstation/settings.ini"), "Folders", "SaveStates", fp(duck, "config/duckstation")),
+            sp("memoryCards", &c(vec![ex("duckstation", "memcards")], &[&format!("{}/memcards", duck[0]), &format!("{}/memcards", duck[1])]))
+                .ini(format!("{}/settings.ini", duck[0]), "Folders", "MemoryCards", duck[0].into())
+                .ini(format!("{}/settings.ini", duck[1]), "Folders", "MemoryCards", duck[1].into()),
+            sp("states", &c(vec![ex("duckstation", "savestates")], &[&format!("{}/savestates", duck[0]), &format!("{}/savestates", duck[1])]))
+                .ini(format!("{}/settings.ini", duck[0]), "Folders", "SaveStates", duck[0].into())
+                .ini(format!("{}/settings.ini", duck[1]), "Folders", "SaveStates", duck[1].into()),
         ]),
         ("pcsx2", vec![
-            sp("memoryCards", &v![".config/PCSX2/memcards", fp(p2, "config/PCSX2/memcards")])
-                .ini(".config/PCSX2/inis/PCSX2.ini".into(), "Folders", "MemoryCards", ".config/PCSX2".into())
-                .ini(fp(p2, "config/PCSX2/inis/PCSX2.ini"), "Folders", "MemoryCards", fp(p2, "config/PCSX2")),
-            sp("states", &v![".config/PCSX2/sstates", fp(p2, "config/PCSX2/sstates")])
-                .ini(".config/PCSX2/inis/PCSX2.ini".into(), "Folders", "Savestates", ".config/PCSX2".into())
-                .ini(fp(p2, "config/PCSX2/inis/PCSX2.ini"), "Folders", "Savestates", fp(p2, "config/PCSX2")),
+            sp("memoryCards", &c(vec![ex("pcsx2", "memcards")], &["Documents/PCSX2/memcards"]))
+                .ini("Documents/PCSX2/inis/PCSX2.ini".into(), "Folders", "MemoryCards", "Documents/PCSX2".into()),
+            sp("states", &c(vec![ex("pcsx2", "sstates")], &["Documents/PCSX2/sstates"]))
+                .ini("Documents/PCSX2/inis/PCSX2.ini".into(), "Folders", "Savestates", "Documents/PCSX2".into()),
         ]),
-        ("rpcs3", vec![sp("saves", &v![".config/rpcs3/dev_hdd0/home", fp("net.rpcs3.RPCS3", "config/rpcs3/dev_hdd0/home")])]),
-        ("shadps4", vec![sp("saves", &v![".local/share/shadPS4/savedata", fp("net.shadps4.shadPS4", "data/shadPS4/savedata")])]),
+        ("rpcs3", vec![sp("saves", &c(vec![ex("rpcs3", "dev_hdd0/home")], &["AppData/Roaming/rpcs3/dev_hdd0/home"]))]),
+        ("shadps4", vec![sp("saves", &c(vec![ex("shadps4", "user/savedata")], &["AppData/Roaming/shadPS4/savedata"]))]),
         ("ppsspp", vec![
-            sp("saves", &v![".config/ppsspp/PSP/SAVEDATA", fp("org.ppsspp.PPSSPP", "config/ppsspp/PSP/SAVEDATA")]),
-            sp("states", &v![".config/ppsspp/PSP/PPSSPP_STATE", fp("org.ppsspp.PPSSPP", "config/ppsspp/PSP/PPSSPP_STATE")]),
+            sp("saves", &c(vec![ex("ppsspp", "memstick/PSP/SAVEDATA")], &["Documents/PPSSPP/PSP/SAVEDATA"])),
+            sp("states", &c(vec![ex("ppsspp", "memstick/PSP/PPSSPP_STATE")], &["Documents/PPSSPP/PSP/PPSSPP_STATE"])),
         ]),
-        ("vita3k", vec![sp("saves", &v![".local/share/Vita3K/Vita3K/ux0/user", fp("org.vita3k.Vita3K", "data/Vita3K/Vita3K/ux0/user")])]),
-        ("azahar", three("azahar-emu", "org.azahar_emu.Azahar")),
-        ("lime3ds", three("lime3ds-emu", "io.github.lime3ds.Lime3DS")),
-        ("citra", three("citra-emu", "org.citra_emu.citra")),
-        ("mesen", vec![sp("saves", &v![".config/Mesen2/Saves", "Documents/Mesen2/Saves"]), sp("states", &v![".config/Mesen2/SaveStates", "Documents/Mesen2/SaveStates"])]),
-        ("simple64", vec![sp("saves", &v![".local/share/simple64/save", ".local/share/mupen64plus/save", fp("io.github.simple64.simple64", "data/simple64/save")])]),
-        ("flycast", vec![sp("saves", &v![".local/share/flycast", fp("org.flycast.Flycast", "data/flycast")]).only(&["bin", "sav", "state", "vmu"])]),
-        ("redream", vec![sp("saves", &v![".redream/saves"])]),
+        ("vita3k", vec![sp("saves", &c(vec![ex("vita3k", "ux0/user")], &["AppData/Roaming/Vita3K/Vita3K/ux0/user"]))]),
+        ("azahar", three("azahar", "Azahar")),
+        ("lime3ds", three("lime3ds", "Lime3DS")),
+        ("citra", three("citra", "Citra")),
+        ("mesen", vec![sp("saves", &c(vec![ex("mesen", "Saves")], &["Documents/Mesen2/Saves"])), sp("states", &c(vec![ex("mesen", "SaveStates")], &["Documents/Mesen2/SaveStates"]))]),
+        ("simple64", vec![sp("saves", &c(vec![ex("simple64", "save")], &["AppData/Roaming/simple64/save"]))]),
+        ("flycast", vec![sp("saves", &c(vec![ex("flycast", "data")], &["AppData/Roaming/flycast/data"])).only(&["bin", "sav", "state", "vmu"])]),
+        ("redream", vec![sp("saves", &c(vec![ex("redream", "saves")], &[]))]),
         // L'EEPROM et le disque dur sont dans le même dossier, et le disque est une image de 8 Go.
-        ("xemu", vec![sp("systemMemory", &v![".local/share/xemu/xemu", fp("app.xemu.xemu", "data/xemu/xemu")]).label("Mémoire système (EEPROM)").excluding(&["xbox_hdd.qcow2", "xbox_hdd.img"])]),
-        ("xenia", vec![sp("saves", &v![".local/share/Xenia/content", "Documents/Xenia/content"])]),
+        ("xemu", vec![sp("systemMemory", &c(vec![], &["AppData/Roaming/xemu/xemu"])).label("Mémoire système (EEPROM)").excluding(&["xbox_hdd.qcow2", "xbox_hdd.img"])]),
+        ("xenia", vec![sp("saves", &c(vec![ex("xenia", "content")], &["Documents/Xenia/content"]))]),
         ("mame", vec![
-            sp("systemMemory", &v![".mame/nvram", fp("org.mamedev.MAME", ".mame/nvram")]).slug("nvram", "Mémoire des bornes (NVRAM)"),
-            sp("states", &v![".mame/sta", fp("org.mamedev.MAME", ".mame/sta")]),
+            sp("systemMemory", &c(vec![ex("mame", "nvram")], &[])).slug("nvram", "Mémoire des bornes (NVRAM)"),
+            sp("states", &c(vec![ex("mame", "sta")], &[])),
         ]),
         ("retroarch", vec![
-            sp("saves", &v![".config/retroarch/saves", fp("org.libretro.RetroArch", "config/retroarch/saves")]),
-            sp("states", &v![".config/retroarch/states", fp("org.libretro.RetroArch", "config/retroarch/states")]),
+            sp("saves", &c(vec![ex("retroarch", "saves")], &["AppData/Roaming/RetroArch/saves"])),
+            sp("states", &c(vec![ex("retroarch", "states")], &["AppData/Roaming/RetroArch/states"])),
         ]),
-        ("uzdoom", vec![sp("saves", &v![".local/share/games/uzdoom", ".config/uzdoom/savegames"]).only(&["zds"])]),
-        ("gzdoom", vec![sp("saves", &v![".local/share/games/gzdoom", ".config/gzdoom/savegames", fp("org.zdoom.GZDoom", ".config/gzdoom/savegames"), fp("org.zdoom.GZDoom", "data/games/gzdoom")]).only(&["zds"])]),
-        // Un jeu Windows sauvegarde dans son préfixe Proton (un par jeu, nommé d'après lui).
-        ("proton", vec![
-            sp("saves", &v![format!("{{prefixes}}/*/{up}/Saved Games")]).slug("saved-games", "Jeux sauvegardés (Saved Games)"),
-            sp("saves", &v![format!("{{prefixes}}/*/{up}/AppData/Roaming")]).slug("appdata", "Données d'application (AppData)"),
-            sp("saves", &v![format!("{{prefixes}}/*/{up}/AppData/LocalLow")]).slug("locallow", "Données locales (LocalLow)"),
-            sp("saves", &v![format!("{{prefixes}}/*/{up}/Documents")]).slug("documents", "Documents"),
-        ]),
+        ("uzdoom", vec![sp("saves", &c(vec![ex("uzdoom", "save")], &["Saved Games/UZDoom", "Documents/My Games/UZDoom"])).only(&["zds"])]),
+        ("gzdoom", vec![sp("saves", &c(vec![ex("gzdoom", "save")], &["Saved Games/GZDoom", "Documents/My Games/GZDoom"])).only(&["zds"])]),
     ]
 }
 
@@ -148,10 +146,10 @@ pub fn read_ini(file: &Path, section: &str, key: &str) -> Option<String> {
 
 /// Développe un chemin du catalogue ; `*` nomme le dossier dans la sauvegarde.
 fn expand(c: &str, prefixes: &Path) -> Vec<(PathBuf, String)> {
-    let full = if let Some(r) = c.strip_prefix("{prefixes}") { format!("{}{r}", prefixes.display()) } else { home().join(c).to_string_lossy().into() };
-    let mut found = vec![(PathBuf::from("/"), String::new())];
-    for part in full.split('/').skip(1) {
-        if part.is_empty() { continue; }
+    let full: PathBuf = if let Some(r) = c.strip_prefix("{prefixes}") { prefixes.join(r.trim_start_matches(['/', '\\'])) } else { home().join(c) };
+    let mut found = vec![(PathBuf::new(), String::new())];
+    for comp in full.components() {
+        let part = comp.as_os_str().to_string_lossy().to_string();
         if part == "*" {
             let mut next = vec![];
             for (p, _) in &found {
@@ -159,7 +157,7 @@ fn expand(c: &str, prefixes: &Path) -> Vec<(PathBuf, String)> {
                 for e in rd.flatten() { let n = e.file_name().to_string_lossy().to_string(); if !n.starts_with('.') && is_dir(&e.path()) { next.push((e.path(), n)); } }
             }
             found = next;
-        } else { for f in found.iter_mut() { f.0.push(part); } }
+        } else { for f in found.iter_mut() { f.0.push(comp); } }
     }
     found.into_iter().filter(|f| is_dir(&f.0)).collect()
 }
@@ -173,7 +171,7 @@ pub fn catalog_folders(prefixes: &Path) -> Vec<Folder> {
             // Ce que l'émulateur écrit dans sa configuration passe avant tout.
             let configured = s.settings.iter().find_map(|i| {
                 let v = read_ini(&home().join(&i.file), i.section, i.key)?;
-                let p = if v.starts_with('/') { PathBuf::from(v) } else { home().join(&i.relative_to).join(v) };
+                let p = if Path::new(&v).is_absolute() { PathBuf::from(v) } else { home().join(&i.relative_to).join(v) };
                 is_dir(&p).then_some(p)
             });
             if let Some(p) = configured { out.push(folder(emu, s.kind, slug, s.label, p, "", filter)); continue; }
@@ -318,7 +316,7 @@ pub struct Entry { pub emulator: String, pub kind: String, pub source: String, p
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Manifest { #[serde(default)] pub updated: String, #[serde(default)] pub machine: String, #[serde(default)] pub entries: BTreeMap<String, Entry> }
 
-pub fn hostname() -> String { std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()).unwrap_or_else(|_| "linux".into()) }
+pub fn hostname() -> String { std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "windows".into()) }
 
 #[cfg(test)]
 mod tests {

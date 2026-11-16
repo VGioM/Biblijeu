@@ -507,22 +507,8 @@ fn inspector(app: &mut App, ui: &mut Ui, it: &Item, acts: &mut Vec<Act>) {
         });
     }
 
-    if it.system == "windows" && it.steam_id.is_none() {
-        section(ui, &p, "Proton", |ui| {
-            if app.protons.is_empty() { notice(ui, &p, "Aucun Proton trouvé. Installez « Proton Experimental » depuis Steam (Bibliothèque → Outils), ou GE-Proton avec ProtonPlus."); return; }
-            let general = { let g = app.settings.string("protonVersion"); if g.is_empty() { app.protons[0].clone() } else { g } };
-            let cur = st.proton_version.clone();
-            egui::ComboBox::from_id_salt("proton").width(ui.available_width()).selected_text(cur.clone().unwrap_or(format!("Réglage général ({general})"))).show_ui(ui, |ui| {
-                if ui.selectable_label(cur.is_none(), format!("Réglage général ({general})")).clicked() { acts.push(Act::Patch(it.id.clone(), Patch::Proton(None))); }
-                for pr in &app.protons { if ui.selectable_label(cur.as_deref() == Some(pr), pr).clicked() { acts.push(Act::Patch(it.id.clone(), Patch::Proton(Some(pr.clone())))); } }
-            });
-            small(ui, &p, &format!("Lancé {} avec un préfixe propre à ce jeu.", if app.has_umu { "par umu-run, dans le conteneur Steam Linux Runtime," } else { "par Proton" }));
-            if ui::button_icon(ui, &p, "folder", "Préfixe du jeu").clicked() { acts.push(Act::OpenPath(crate::emulators::prefix_for(it, &app.prefixes()))); }
-        });
-    }
-
     if it.steam_id.is_some() {
-        section(ui, &p, "Steam", |ui| small(ui, &p, &format!("Lancé par Steam, avec {}.", if it.system == "windows" { "le Proton choisi pour ce jeu dans Steam" } else { "ses réglages" })));
+        section(ui, &p, "Steam", |ui| small(ui, &p, &format!("Lancé par Steam, avec {}.", "ses réglages")));
     }
 
     if let (Kind::Rom, Some(e)) = (it.kind, emu.as_ref()) {
@@ -619,65 +605,38 @@ fn emu_icon(app: &mut App, ui: &mut Ui, id: &str) {
 
 fn updates(app: &mut App, ui: &mut Ui, acts: &mut Vec<Act>) {
     let p = app.p;
-    let activity = app.emu_activity.lock().unwrap().clone();
-    let flat: Vec<_> = app.emulators.iter().filter(|e| e.how == How::Flatpak).cloned().collect();
-    let fu = app.flatpak_updates.clone();
-    let upd = move |e: &crate::emulators::Installed| e.target.as_ref().and_then(|t| fu.get(t)).cloned();
-    let outdated: Vec<_> = flat.iter().filter(|e| upd(e).is_some()).cloned().collect();
-    let up_to_date: Vec<_> = flat.iter().filter(|e| upd(e).is_none()).cloned().collect();
-    let others: Vec<_> = app.emulators.iter().filter(|e| e.how != How::Flatpak).cloned().collect();
+    let installed: Vec<_> = app.emulators.iter().filter(|e| e.how != How::Proton).cloned().collect();
     ui::group(ui, &p, "", |ui| {
         ui.horizontal(|ui| {
-            ui.add(icons::image(if outdated.is_empty() { "checkCircle" } else { "downCircle" }, 22.0, if outdated.is_empty() { p.ok } else { p.accent }));
+            ui.add(icons::image("cpu", 22.0, p.accent));
             ui.vertical(|ui| {
-                let n = outdated.len();
-                ui.label(RichText::new(if n > 0 { format!("{n} mise{} à jour disponible{}", pl(n), pl(n)) } else if !flat.is_empty() { "Vos émulateurs Flatpak sont à jour".into() } else { "Aucun émulateur Flatpak".into() }).font(theme::bold(14.0)));
-                let checked = app.updates_checked_at.map(|t| format!("Vérifié {}.", sys::relative(t))).unwrap_or("Pas encore vérifié.".into());
-                ui.set_max_width(ui.available_width() - 260.0);
-                small(ui, &p, &format!("{checked} Les émulateurs Flatpak sont vérifiés une fois par jour ; ceux en paquet se mettent à jour avec le système, les AppImage depuis la page du projet."));
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if !outdated.is_empty() && ui::primary(ui, &p, "Tout mettre à jour").clicked() { acts.push(Act::UpdateAll); }
-                if app.checking_updates { ui::spinner(ui, 16.0); } else if ui.add_enabled(app.has_flatpak, egui::Button::new("Vérifier maintenant")).clicked() { acts.push(Act::CheckUpdates); }
+                let n = installed.len();
+                ui.label(RichText::new(if n > 0 { format!("{n} émulateur{} trouvé{}", pl(n), pl(n)) } else { "Aucun émulateur trouvé".into() }).font(theme::bold(14.0)));
+                small(ui, &p, "Cherchés dans Program Files, AppData\\Local\\Programs, Scoop, le PATH et les dossiers d'émulateurs des réglages (Sources). Sous Windows, chacun se met à jour lui-même ou depuis la page de son projet.");
             });
         });
     });
-    let mut auto = app.settings.bool("autoInstallUpdates");
-    if ui::check_help(ui, &p, &mut auto, "Installer automatiquement les mises à jour", "Après la vérification du jour, pour les Flatpak installés pour l'utilisateur (ceux du système demandent un mot de passe).").changed() {
-        acts.push(Act::Setting("autoInstallUpdates", auto.into()));
-    }
-    let line = |app: &mut App, ui: &mut Ui, e: &crate::emulators::Installed, acts: &mut Vec<Act>, extra: bool| {
+    let line = |app: &mut App, ui: &mut Ui, e: &crate::emulators::Installed, acts: &mut Vec<Act>| {
         ui.horizontal(|ui| {
             emu_icon(app, ui, e.id());
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.label(RichText::new(e.name()).strong());
-                let id = e.id();
-                let (text, color) = if let Some(a) = activity.get(id) { (a.clone(), p.muted) } else if let Some(pr) = app.emu_problems.get(id) { (pr.clone(), p.warm) }
-                    else if let Some(n) = app.emu_notes.get(id) { (n.clone(), p.ok) } else {
-                        let kind = match e.how { How::Flatpak => format!("Flatpak {}", if e.installation.as_deref() == Some("user") { "(utilisateur)" } else { "(système)" }), How::Native => "paquet".into(), How::AppImage => "AppImage".into(), How::Proton => "Steam".into() };
-                        let mut parts = vec![kind];
-                        if let Some(v) = &e.version { parts.push(if e.how == How::Proton { v.clone() } else { format!("version {v}") }); }
-                        if let Some(u) = upd(e) { parts.push(format!("→ {u}")); }
-                        (parts.join(" · "), p.muted)
-                    };
-                ui.label(RichText::new(text).size(11.5).color(color));
+                let mut parts = vec![e.how_label().to_string()];
+                if let Some(v) = &e.version { parts.push(format!("version {v}")); }
+                if let Some(t) = &e.target { parts.push(t.clone()); }
+                ui.add(egui::Label::new(RichText::new(parts.join(" · ")).size(11.5).color(p.muted)).truncate());
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let url = e.spec.github.map(|g| format!("https://github.com/{g}/releases/latest")).or(e.spec.homepage.map(String::from));
                 if let Some(u) = url { if ui::icon_button(ui, &p, "external", 14.0, "Page du projet").clicked() { acts.push(Act::OpenUrl(u)); } }
-                if activity.contains_key(e.id()) { ui::spinner(ui, 14.0); }
-                if extra {
-                    if ui.add_enabled(!activity.contains_key(e.id()), egui::Button::new(RichText::new("Mettre à jour").color(p.on_accent)).fill(p.accent)).clicked() { acts.push(Act::UpdateEmu(e.id().into())); }
-                    if let Some(u) = upd(e) { ui.label(RichText::new(u).size(11.5).color(p.warm)); }
-                }
+                if let Some(t) = &e.target { if ui::icon_button(ui, &p, "folder", 14.0, "Afficher dans l'Explorateur").clicked() { acts.push(Act::Reveal(PathBuf::from(t))); } }
             });
         });
     };
-    if !outdated.is_empty() { ui.label(RichText::new("À mettre à jour").font(theme::bold(15.0))); list_frame(ui, &p, |ui| for e in &outdated { line(app, ui, e, acts, true); }); }
-    if !up_to_date.is_empty() { ui.label(RichText::new("À jour").font(theme::bold(15.0))); list_frame(ui, &p, |ui| for e in &up_to_date { line(app, ui, e, acts, false); }); }
-    if !others.is_empty() { ui.label(RichText::new("Paquets, AppImage et Proton").font(theme::bold(15.0))); list_frame(ui, &p, |ui| for e in &others { line(app, ui, e, acts, false); }); }
-    let missing = app.missing_emulators();
+    if !installed.is_empty() { ui.label(RichText::new("Installés").font(theme::bold(15.0))); list_frame(ui, &p, |ui| for e in &installed { line(app, ui, e, acts); }); }
+    let missing: Vec<&catalog::Emulator> = catalog::EMULATORS.iter()
+        .filter(|m| !crate::emulators::win_exes(m.id).is_empty() && (m.github.is_some() || m.homepage.is_some()) && !app.emulators.iter().any(|x| x.id() == m.id)).collect();
     if !missing.is_empty() {
         ui.label(RichText::new("Non installés").font(theme::bold(15.0)));
         list_frame(ui, &p, |ui| for m in &missing {
@@ -689,16 +648,15 @@ fn updates(app: &mut App, ui: &mut Ui, acts: &mut Vec<Act>) {
                     ui.spacing_mut().item_spacing.y = 1.0;
                     ui.label(RichText::new(m.name).strong());
                     let systems: Vec<&str> = m.systems.iter().take(6).filter_map(|s| catalog::system(s).map(|s| s.short)).collect();
-                    let (t, c) = if let Some(a) = activity.get(m.id) { (a.clone(), p.muted) } else if let Some(pr) = app.emu_problems.get(m.id) { (pr.clone(), p.warm) }
-                        else if let Some(n) = app.emu_notes.get(m.id) { (n.clone(), p.ok) } else { (format!("{} · {}", systems.join(", "), m.flatpak[0]), p.muted) };
-                    ui.label(RichText::new(t).size(11.5).color(c));
+                    ui.label(RichText::new(systems.join(", ")).size(11.5).color(p.muted));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if activity.contains_key(m.id) { ui::spinner(ui, 14.0); }
-                    else if ui.add_enabled(app.has_flatpak, egui::Button::new("Installer")).on_hover_text(format!("flatpak install flathub {}", m.flatpak[0])).clicked() { acts.push(Act::InstallEmu(m.id.into())); }
+                    let url = m.github.map(|g| format!("https://github.com/{g}/releases/latest")).or(m.homepage.map(String::from)).unwrap_or_default();
+                    if ui.button("Télécharger").on_hover_text(&url).clicked() { acts.push(Act::OpenUrl(url)); }
                 });
             });
         });
+        small(ui, &p, "Décompressez l'émulateur dans un dossier d'émulateurs (Réglages → Sources), puis relancez l'analyse.");
     }
 }
 
@@ -961,23 +919,6 @@ fn settings_sheet(app: &mut App, ctx: &egui::Context, acts: &mut Vec<Act>) {
                     ui::group(ui, &p, "", |ui| {
                         check(ui, app, acts, "directLaunch", "Lancement direct", "Plein écran et sans l'interface de l'émulateur, quand il l'accepte (Dolphin, DuckStation, PCSX2…).");
                         check(ui, app, acts, "resumeOnLaunch", "Reprendre la sauvegarde d'état au lancement", "Quand l'émulateur sait le faire en ligne de commande (DuckStation, PCSX2).");
-                    });
-                    ui::group(ui, &p, "Jeux Windows : Proton", |ui| {
-                        if app.protons.is_empty() { small(ui, &p, "Aucun Proton trouvé : installez « Proton Experimental » depuis Steam."); }
-                        else {
-                            let cur = app.settings.string("protonVersion");
-                            let auto = format!("Automatique ({})", app.protons[0]);
-                            egui::ComboBox::from_id_salt("proton-all").width(300.0).selected_text(if cur.is_empty() { auto.clone() } else { cur.clone() }).show_ui(ui, |ui| {
-                                if ui.selectable_label(cur.is_empty(), auto).clicked() { acts.push(Act::Setting("protonVersion", "".into())); }
-                                for pr in &app.protons { if ui.selectable_label(&cur == pr, pr).clicked() { acts.push(Act::Setting("protonVersion", pr.clone().into())); } }
-                            });
-                        }
-                        small(ui, &p, &format!("Les Proton que Steam a installés (bibliothèques Steam et compatibilitytools.d). {} Les jeux Steam, eux, utilisent le Proton choisi dans Steam.",
-                            if app.has_umu { "Lancés par umu-run, dans le conteneur Steam Linux Runtime, comme le fait Steam." } else { "umu-run est introuvable : Proton est lancé directement." }));
-                        ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Ouvrir").clicked() { acts.push(Act::OpenPath(app.prefixes())); }
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.add(egui::Label::new(RichText::new(format!("Préfixes : {}", app.settings.string("prefixesFolder"))).size(11.5).color(p.muted)).truncate()));
-                        }));
                     });
                     ui::group(ui, &p, "Émulateur par console", |ui| {
                         let prefs: HashMap<String, String> = app.settings.get_as("emulatorForSystem").unwrap_or_default();
