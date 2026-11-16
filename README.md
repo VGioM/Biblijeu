@@ -31,6 +31,13 @@ commande), pour Swift Testing.
 
 ---
 
+## Windows et Linux
+
+Biblijeu existe aussi pour Windows et pour Linux : des applications natives en Rust ([egui](https://github.com/emilk/egui)), avec la même bibliothèque, les mêmes réglages et la même mise à jour intégrée. Les fichiers sont dans les mêmes [releases](https://github.com/VGioM/Biblijeu/releases) que la version Mac, un par plateforme.
+
+- **Windows 10 ou 11 (64 bits)** : téléchargez `Biblijeu-<version>-windows-x64.zip`, décompressez-le où vous voulez et lancez `Biblijeu.exe`. Rien à installer. Au premier lancement, SmartScreen peut bloquer l'app (elle n'est pas signée) : **Informations complémentaires** → **Exécuter quand même**. Les jeux Windows se lancent directement, les jeux Steam par Steam ; les émulateurs (`.exe` installés ou portables) sont trouvés dans Program Files, AppData, Scoop, le PATH et vos dossiers d'émulateurs, et les lanceurs (Epic, GOG, EA, Battle.net…) dans le menu Démarrer. Le code est sur la branche [`windows`](https://github.com/VGioM/Biblijeu/tree/windows/windows).
+- **Linux x86_64** : téléchargez `Biblijeu-<version>-linux-x86_64.AppImage`, rendez-le exécutable (`chmod +x`) et lancez-le. Émulateurs en Flatpak, en paquet ou en AppImage ; les jeux Windows passent par Proton (celui que Steam a installé). Le code est sur la branche [`linux`](https://github.com/VGioM/Biblijeu/tree/linux/linux).
+
 ## Ce qu'elle fait
 
 **Répertorie.** Un dossier de ROM (`~/Documents/RetroArch/downloads/ROM`, par
@@ -623,6 +630,9 @@ certificat** (« Biblijeu Local Signing », dans le trousseau de session ; à ex
 privée en lieu sûr). Une release signée avec un autre certificat devrait être
 réinstallée à la main par chacun.
 
-Les versions Linux et Windows à venir iront dans la même release, un fichier par
-plateforme : `<App>-<version>-linux-x86_64.tar.gz`, `<App>-<version>-windows-x64.zip`…
-La version Mac ne prend que le fichier marqué `macOS`.
+Les versions Linux et Windows vont dans les mêmes releases, un fichier par
+plateforme : `<App>-<version>-macOS-arm64.zip`, `<App>-<version>-linux-x86_64.AppImage`,
+`<App>-<version>-windows-x64.zip`. Chaque version suit sa propre numérotation et sa
+mise à jour intégrée ne prend que son fichier, dans la release la plus récente qui en
+contient un. Le code Linux est sur la branche `linux` (dossier `linux/`), le code
+Windows sur la branche `windows` (dossier `windows/`, `./build-windows.sh` fait le zip).
