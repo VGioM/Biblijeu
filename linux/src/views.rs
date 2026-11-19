@@ -359,8 +359,8 @@ fn draw_cover(app: &mut App, ui: &Ui, rect: Rect, it: &Item, radius: u8, size: S
         let inner = rect.shrink(pad);
         let inner = Rect::from_center_size(rect.center(), Vec2::splat(inner.width().min(inner.height())));
         if let Some((t, sz)) = src.as_ref().and_then(|s| app.images.get(s, Size::Thumb)) { ui::paint_texture(ui, inner, &t, sz, 0, ui::Fit::Contain); }
-        else { icons::image(it.icon(), 26.0, Color32::from_white_alpha(115)).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(26.0))); }
-        ui.painter().rect_stroke(rect, radius, Stroke::new(0.5_f32, Color32::from_white_alpha(23)), egui::StrokeKind::Inside);
+        else { icons::image(it.icon(), 26.0, theme::white(115)).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(26.0))); }
+        ui.painter().rect_stroke(rect, radius, Stroke::new(0.5_f32, theme::white(23)), egui::StrokeKind::Inside);
     } else {
         ui::cover(ui, &mut app.images, rect, src.as_ref(), &it.sort_title, it.icon(), radius, size, true);
     }
@@ -436,7 +436,7 @@ fn section(ui: &mut Ui, p: &theme::Palette, title: &str, body: impl FnOnce(&mut 
 }
 
 fn notice(ui: &mut Ui, p: &theme::Palette, text: &str) {
-    egui::Frame::new().fill(Color32::from_white_alpha(10)).corner_radius(8).inner_margin(8).show(ui, |ui| {
+    egui::Frame::new().fill(theme::white(10)).corner_radius(8).inner_margin(8).show(ui, |ui| {
         ui.horizontal_top(|ui| { ui.add(icons::image("warning", 15.0, p.warm)); ui.add(egui::Label::new(RichText::new(text).size(12.0)).wrap()); });
     });
 }
@@ -555,7 +555,7 @@ fn inspector(app: &mut App, ui: &mut Ui, it: &Item, acts: &mut Vec<Act>) {
         if !it.tags.is_empty() { ui::info_row(ui, &p, "Étiquettes", &it.tags.join(", ")); }
         let preview = match &plan { Plan::Error(_) => None, p => Some(p.preview()) };
         if let Some(pv) = &preview {
-            egui::Frame::new().fill(Color32::from_white_alpha(15)).corner_radius(6).inner_margin(7).show(ui, |ui| {
+            egui::Frame::new().fill(theme::white(15)).corner_radius(6).inner_margin(7).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.add(egui::Label::new(RichText::new(pv).monospace().size(10.5).color(p.muted)).wrap().selectable(true));
             });
@@ -602,7 +602,7 @@ fn inspector(app: &mut App, ui: &mut Ui, it: &Item, acts: &mut Vec<Act>) {
 // ── Mises à jour ──────────────────────────────────────────────────────────
 
 fn list_frame(ui: &mut Ui, p: &theme::Palette, body: impl FnOnce(&mut Ui)) {
-    egui::Frame::new().fill(Color32::from_white_alpha(8)).stroke(Stroke::new(1.0_f32, p.hairline)).corner_radius(10).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+    egui::Frame::new().fill(theme::white(8)).stroke(Stroke::new(1.0_f32, p.hairline)).corner_radius(10).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         body(ui);
     });
@@ -611,7 +611,7 @@ fn list_frame(ui: &mut Ui, p: &theme::Palette, body: impl FnOnce(&mut Ui)) {
 fn emu_icon(app: &mut App, ui: &mut Ui, id: &str) {
     let p = app.p;
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-    ui.painter().rect_filled(rect, 7, Color32::from_white_alpha(14));
+    ui.painter().rect_filled(rect, 7, theme::white(14));
     let icon = app.emu_icons.get(id).and_then(|d| d.1.clone());
     if let Some((t, sz)) = icon.and_then(|i| app.images.get(&Source::File(i), Size::Thumb)) { ui::paint_texture(ui, rect.shrink(3.0), &t, sz, 0, ui::Fit::Contain); }
     else { icons::image("cpu", 16.0, p.muted).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(16.0))); }
@@ -683,7 +683,7 @@ fn updates(app: &mut App, ui: &mut Ui, acts: &mut Vec<Act>) {
         list_frame(ui, &p, |ui| for m in &missing {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-                ui.painter().rect_filled(rect, 7, Color32::from_white_alpha(14));
+                ui.painter().rect_filled(rect, 7, theme::white(14));
                 icons::image("cpu", 16.0, p.muted).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(16.0)));
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;

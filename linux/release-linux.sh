@@ -14,8 +14,9 @@
 # celui que la mise à jour intégrée de la version Linux cherche, et que la
 # version Mac ignore. Une AppImage déjà présente sous ce nom est remplacée.
 #
-# À lancer là où build-appimage.sh fonctionne (Fedora, ou le conteneur toolbox
-# décrit dans README.md) ; gh doit être connecté.
+# Se lance depuis le système : la construction passe par le conteneur distrobox
+# « rustbuild » s'il existe (voir README.md), sinon sur place (Fedora). gh doit
+# être connecté. RELEASE_NOTES remplace le texte d'une release Linux seule.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -31,7 +32,11 @@ echo "▸ Version $VERSION…"
 sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
 
 rm -rf dist
-./build-appimage.sh
+if [ -z "${CONTAINER_ID:-}" ] && command -v distrobox >/dev/null && distrobox list 2>/dev/null | grep -q ' rustbuild '; then
+    distrobox enter rustbuild -- bash -lc "export PATH=\$HOME/.cargo/bin:\$PATH; cd '$PWD' && ./build-appimage.sh"
+else
+    ./build-appimage.sh
+fi
 [ -f "$FILE" ] || { echo "✗ $FILE introuvable."; exit 1; }
 
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
@@ -40,8 +45,10 @@ if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
 else
     echo "▸ Release Linux $TAG…"
     git push -q origin HEAD
-    gh release create "$TAG" "$FILE" -R "$REPO" --target "$(git rev-parse HEAD)" --title "$NAME $VERSION" \
-        --notes "Version Linux uniquement : rien ne change pour la version Mac."
+    # Pas « Latest » : la mise à jour Mac ne lit que celle-là, et n'y trouverait pas son zip.
+    # La version Linux, elle, parcourt toutes les releases.
+    gh release create "$TAG" "$FILE" -R "$REPO" --target "$(git rev-parse HEAD)" --title "$NAME $VERSION" --latest=false \
+        --notes "${RELEASE_NOTES:-Version Linux uniquement : rien ne change pour la version Mac.}"
 fi
 
 # La section Linux des notes : remplacée si elle existe, ajoutée sinon.
