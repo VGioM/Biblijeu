@@ -320,6 +320,8 @@ pub struct GameState {
     #[serde(rename = "artworkURL")] pub artwork_url: Option<String>, pub custom_artwork_path: Option<String>, pub artwork_missing: bool,
     pub search_title: Option<String>, pub resume_slot: Option<u32>, pub state_file_path: Option<String>, pub kind_override: Option<Kind>,
     pub system_override: Option<String>, pub proton_version: Option<String>,
+    /// Un jeu Steam Windows lancé directement avec Proton, sans passer par Steam.
+    pub without_steam: bool,
 }
 
 // ── Sections ──────────────────────────────────────────────────────────────
@@ -329,7 +331,12 @@ pub const SECTIONS: &[(&str, &str, &str)] = &[("all", "Tout", "grid"), ("recent"
     ("unplayable", "Sans émulateur", "warning"), ("updates", "Mises à jour", "downCircle"), ("backups", "Sauvegarde", "drive")];
 pub const SORTS: &[(&str, &str)] = &[("title", "Titre"), ("recentlyPlayed", "Joué récemment"), ("recentlyAdded", "Ajouté récemment"), ("system", "Console"), ("size", "Taille")];
 
+/// Les deux rubriques Steam de la barre latérale : les vrais jeux Steam, et ceux
+/// ajoutés à Steam à la main (« jeux non-Steam »).
+pub const STEAM_SECTIONS: &[(&str, &str, &str)] = &[("steam", "Steam", "gamepad"), ("nonsteam", "Jeux non-Steam", "plus")];
+
 pub fn section_title(sel: &str) -> String {
+    if let Some(s) = STEAM_SECTIONS.iter().find(|s| s.0 == sel) { return s.1.into(); }
     if let Some(id) = sel.strip_prefix("system:") { return system(id).map(|s| s.name.to_string()).unwrap_or(id.into()); }
     if let Some(p) = sel.strip_prefix("source:") { return p.rsplit('/').next().unwrap_or(p).into(); }
     SECTIONS.iter().find(|s| s.0 == sel).map(|s| s.1).unwrap_or("Tout").into()
@@ -345,6 +352,8 @@ pub fn in_section(it: &Item, sel: &str, st: &GameState, playable: bool) -> bool 
         "emulators" => it.kind == Kind::Emulator,
         "other" => it.kind == Kind::Other,
         "unplayable" => it.kind == Kind::Rom && !playable,
+        "steam" => it.steam_id.as_deref().map(|g| crate::steam::shortcut_id(g).is_none()).unwrap_or(false),
+        "nonsteam" => it.steam_id.as_deref().and_then(crate::steam::shortcut_id).is_some(),
         s if s.starts_with("system:") => matches!(it.kind, Kind::Rom | Kind::Game) && it.system == s[7..],
         s if s.starts_with("source:") => it.source_root.as_deref().map(|r| r == &s[7..] || r.starts_with(&format!("{}/", &s[7..]))).unwrap_or(false),
         _ => true,

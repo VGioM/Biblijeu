@@ -175,24 +175,94 @@ impl Plan {
     }
 }
 
-pub struct Opts<'a> { pub emulator: Option<&'a Installed>, pub direct: bool, pub disc: Option<PathBuf>, pub resume: ResumeReq, pub proton: Option<String>, pub prefixes: PathBuf }
+pub struct Opts<'a> { pub emulator: Option<&'a Installed>, pub without_steam: bool, pub direct: bool, pub disc: Option<PathBuf>, pub resume: ResumeReq, pub proton: Option<String>, pub prefixes: PathBuf }
 
 pub fn pick_proton(wanted: Option<&str>) -> Option<steam::Proton> {
     let b = steam::protons();
     b.iter().find(|p| Some(p.name.as_str()) == wanted).or_else(|| b.iter().find(|p| p.name == "Proton - Experimental")).or(b.first()).cloned()
 }
 
-pub fn prefix_for(item: &Item, root: &Path) -> PathBuf { root.join(slug(&item.title)) }
+pub fn prefix_for(item: &Item, root: &Path) -> PathBuf {
+    // Un jeu ajouté à Steam garde le préfixe que Steam lui a créé (sauvegardes, launcher installé dedans).
+    if let Some(p) = item.steam_id.as_deref().and_then(steam::shortcut_id).and_then(steam::compat_prefix) { return p; }
+    // Un jeu Steam : le préfixe que Steam lui a fait, dans la bibliothèque où il est installé.
+    if let Some(id) = item.steam_id.as_deref().filter(|g| steam::shortcut_id(g).is_none()) {
+        if let Some(lib) = item.path.ancestors().find(|a| a.file_name().map(|n| n == "steamapps").unwrap_or(false)) { return lib.join("compatdata").join(id); }
+        if let Some(r) = steam::root() { return r.join("steamapps/compatdata").join(id); }
+    }
+    root.join(slug(&item.title))
+}
 
-fn proton_plan(exe: &Path, proton: &steam::Proton, prefix: &Path) -> Plan {
+const NO_PROTON: &str = "Aucun Proton trouvé. Installez « Proton Experimental » depuis Steam (Bibliothèque → Outils), ou GE-Proton avec ProtonUp-Qt / ProtonPlus.";
+
+/// Les options de lancement de Steam : `VAR=1 gamemoderun %command% -arg`.
+/// Rend les variables, les programmes placés devant, et les arguments du jeu.
+fn steam_options(s: &str) -> (Vec<(String, String)>, Vec<String>, Vec<String>) {
+    let toks = desktop_argv(s);
+    let Some(i) = toks.iter().position(|t| t == "%command%") else { return (vec![], vec![], toks) };
+    let (mut env, mut wrap) = (vec![], vec![]);
+    for t in &toks[..i] {
+        match t.split_once('=') {
+            Some((k, v)) if wrap.is_empty() && !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => env.push((k.to_string(), v.to_string())),
+            _ => wrap.push(t.clone()),
+        }
+    }
+    (env, wrap, toks[i + 1..].to_vec())
+}
+
+/// Un jeu Steam Windows lancé sans Steam : son .exe, avec Proton, dans son préfixe
+/// Steam. Un jeu protégé par Steam (DRM) refusera de démarrer sans le client.
+fn steam_direct_plan(item: &Item, app_id: &str, o: &Opts) -> Plan {
+    let exe = if item.path.is_file() { Some(item.path.clone()) } else { crate::scanner::find_launcher(&item.path) };
+    let Some(exe) = exe else { return Plan::Error(format!("Aucun .exe trouvé dans :\n{}\nLancez ce jeu par Steam.", item.path.display())) };
+    let Some(pr) = pick_proton(o.proton.as_deref()) else { return Plan::Error(NO_PROTON.into()) };
+    let mut plan = proton_plan(&exe, &pr, &prefix_for(item, &o.prefixes), &[], None);
+    if let Plan::Run { env, .. } = &mut plan {
+        // Ce que Steam transmet au jeu : de quoi retrouver le client s'il tourne.
+        for k in ["SteamAppId", "SteamGameId", "STEAM_COMPAT_APP_ID"] { env.push((k.into(), app_id.into())); }
+        if let Some(g) = env.iter_mut().find(|(k, _)| k == "GAMEID") { g.1 = format!("umu-{app_id}"); }
+    }
+    plan
+}
+
+/// Un jeu ajouté à Steam à la main : lancé directement, sans Steam — avec Proton
+/// pour un programme Windows (dans le préfixe de Steam), tel quel pour un jeu Linux.
+fn shortcut_plan(item: &Item, s: &steam::Shortcut, o: &Opts) -> Plan {
+    let exe = &s.exe;
+    if !exe.exists() { return Plan::Error(format!("Le fichier est introuvable :\n{}", exe.display())); }
+    let (env, wrap, args) = steam_options(&s.options);
+    let cwd = Some(s.start_dir.clone()).filter(|d| d.is_dir());
+    let l = exe.to_string_lossy().to_lowercase();
+    let mut plan = if [".exe", ".bat", ".msi", ".lnk"].iter().any(|e| l.ends_with(e)) {
+        let Some(pr) = pick_proton(o.proton.as_deref()) else { return Plan::Error(NO_PROTON.into()) };
+        proton_plan(exe, &pr, &prefix_for(item, &o.prefixes), &args, cwd)
+    } else {
+        let e = exe.to_string_lossy().to_string();
+        let mut argv = if l.ends_with(".sh") { vec!["/bin/sh".into(), e] } else { vec![e] };
+        argv.extend(args);
+        let cwd = cwd.unwrap_or(exe.parent().unwrap_or(Path::new("/")).to_path_buf());
+        Plan::Run { preview: argv.iter().map(|a| q(a)).collect::<Vec<_>>().join(" "), argv, env: vec![], cwd, chmod: false }
+    };
+    if let Plan::Run { argv, env: e, preview, .. } = &mut plan {
+        let mut pre: Vec<String> = env.iter().map(|(k, v)| format!("{k}={}", q(v))).collect();
+        pre.extend(wrap.iter().map(|w| q(w)));
+        if !pre.is_empty() { *preview = format!("{} {preview}", pre.join(" ")); }
+        if !wrap.is_empty() { let mut w = wrap.clone(); w.append(argv); *argv = w; }
+        e.extend(env);
+    }
+    plan
+}
+
+fn proton_plan(exe: &Path, proton: &steam::Proton, prefix: &Path, args: &[String], cwd: Option<PathBuf>) -> Plan {
     let _ = std::fs::create_dir_all(prefix);
-    let cwd = exe.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let cwd = cwd.unwrap_or(exe.parent().unwrap_or(Path::new("/")).to_path_buf());
+    let extra = args.iter().map(|a| format!(" {}", q(a))).collect::<String>();
     let e = exe.to_string_lossy().to_string();
     if let Some(umu) = sys::which("umu-run") {
         // umu lance Proton dans le conteneur Steam Linux Runtime, comme Steam.
         let pfx = prefix.join("pfx").to_string_lossy().to_string();
         let pp = proton.dir.to_string_lossy().to_string();
-        return Plan::Run { preview: format!("WINEPREFIX={} PROTONPATH={} umu-run {}", q(&pfx), q(&pp), q(&e)), argv: vec![umu.to_string_lossy().into(), e],
+        return Plan::Run { preview: format!("WINEPREFIX={} PROTONPATH={} umu-run {}{extra}", q(&pfx), q(&pp), q(&e)), argv: [vec![umu.to_string_lossy().into(), e], args.to_vec()].concat(),
             env: vec![("WINEPREFIX".into(), pfx), ("PROTONPATH".into(), pp), ("GAMEID".into(), "0".into()), ("STORE".into(), "none".into())], cwd, chmod: false };
     }
     let client = steam::root().unwrap_or(dirs::home_dir().unwrap_or_default().join(".local/share/Steam"));
@@ -201,14 +271,19 @@ fn proton_plan(exe: &Path, proton: &steam::Proton, prefix: &Path) -> Plan {
     let pre = format!("STEAM_COMPAT_DATA_PATH={}", q(&prefix.to_string_lossy()));
     if let Some(rt) = steam::sniper() {
         let rt = rt.to_string_lossy().to_string();
-        return Plan::Run { preview: format!("{pre} {} --verb=waitforexitandrun -- {} waitforexitandrun {}", q(&rt), q(&script), q(&e)),
-            argv: vec![rt, "--verb=waitforexitandrun".into(), "--".into(), script, "waitforexitandrun".into(), e], env, cwd, chmod: false };
+        return Plan::Run { preview: format!("{pre} {} --verb=waitforexitandrun -- {} waitforexitandrun {}{extra}", q(&rt), q(&script), q(&e)),
+            argv: [vec![rt, "--verb=waitforexitandrun".into(), "--".into(), script, "waitforexitandrun".into(), e], args.to_vec()].concat(), env, cwd, chmod: false };
     }
-    Plan::Run { preview: format!("{pre} {} run {}", q(&script), q(&e)), argv: vec![script, "run".into(), e], env, cwd, chmod: false }
+    Plan::Run { preview: format!("{pre} {} run {}{extra}", q(&script), q(&e)), argv: [vec![script, "run".into(), e], args.to_vec()].concat(), env, cwd, chmod: false }
 }
 
 pub fn plan(item: &Item, o: &Opts) -> Plan {
-    if let Some(id) = &item.steam_id { return Plan::Url(format!("steam://rungameid/{id}")); }
+    if let Some(id) = &item.steam_id {
+        // Un vrai jeu Steam a besoin de Steam ; un jeu ajouté à la main, non.
+        if let Some(sc) = steam::shortcut_id(id).and_then(|_| steam::shortcut(id)) { return shortcut_plan(item, &sc, o); }
+        if o.without_steam && item.system == "windows" { return steam_direct_plan(item, id, o); }
+        return Plan::Url(format!("steam://rungameid/{id}"));
+    }
     if let Some(exec) = &item.desktop_exec {
         let argv = desktop_argv(exec);
         if argv.is_empty() { return Plan::Error("Commande vide dans le fichier .desktop.".into()); }
@@ -226,10 +301,10 @@ pub fn plan(item: &Item, o: &Opts) -> Plan {
 
     if item.system == "windows" {
         let Some(pr) = pick_proton(o.proton.as_deref()) else {
-            return Plan::Error("Aucun Proton trouvé. Installez « Proton Experimental » depuis Steam (Bibliothèque → Outils), ou GE-Proton avec ProtonUp-Qt / ProtonPlus.".into());
+            return Plan::Error(NO_PROTON.into());
         };
         if rom.to_string_lossy().to_lowercase().ends_with(".lnk") { return Plan::Error("Un raccourci .lnk ne se lance pas directement : choisissez le .exe du jeu.".into()); }
-        return proton_plan(&rom, &pr, &prefix_for(item, &o.prefixes));
+        return proton_plan(&rom, &pr, &prefix_for(item, &o.prefixes), &[], None);
     }
 
     let Some(em) = o.emulator else {

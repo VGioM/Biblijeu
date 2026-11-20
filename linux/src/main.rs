@@ -8,11 +8,15 @@ mod backup;
 mod catalog;
 mod common;
 mod emulators;
+mod prefixsync;
 mod scanner;
 mod steam;
 mod views;
 
 fn main() -> eframe::Result {
+    common::desktop::ensure(&common::desktop::Entry { app_id: "biblijeu", name: "Biblijeu",
+        comment: "Bibliothèque de jeux : ROM, jeux Steam, jeux Windows avec Proton, émulateurs et sauvegardes",
+        categories: "Game;", icon_png: include_bytes!("../resources/icon.png") });
     let icon = image::load_from_memory(include_bytes!("../resources/icon.png")).ok().map(|i| {
         let i = i.to_rgba8();
         let (w, h) = i.dimensions();

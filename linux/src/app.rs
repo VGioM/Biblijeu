@@ -12,6 +12,7 @@ use crate::common::sys;
 use crate::common::theme;
 use crate::common::ui::Toast;
 use crate::emulators::{self, How, Installed, Plan};
+use crate::prefixsync;
 use crate::{scanner, steam};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -34,7 +35,12 @@ pub struct BackupState {
     pub message: Option<String>, pub available: bool,
 }
 
-pub struct Scan { items: Vec<Item>, emulators: Vec<Installed>, emu_icons: HashMap<String, (PathBuf, Option<PathBuf>)> }
+pub struct Scan { items: Vec<Item>, emulators: Vec<Installed>, emu_icons: HashMap<String, (PathBuf, Option<PathBuf>)>, adopted: Vec<Adopted> }
+
+/// Un jeu que Biblijeu connaissait déjà et qui vient d'être ajouté à Steam :
+/// ses réglages et son préfixe le suivent.
+#[derive(Clone)]
+pub struct Adopted { pub new_id: String, pub old_id: String, pub old_title: String }
 
 pub enum Bg {
     Scanned(Scan),
@@ -48,6 +54,8 @@ pub enum Bg {
     Groups(Vec<Group>, bool),
     BackupDone { summary: Option<String>, failures: Vec<String>, append: bool, to_backup: bool },
     BackupFinished,
+    Synced(Vec<String>, Vec<String>, bool),
+    Error(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -114,6 +122,11 @@ pub struct App {
     pub update: SelfUpdate,
     pub test: crate::common::testhook::TestHook,
     test_done: bool,
+    /// Nom de la copie des sauvegardes d'un jeu ajouté à Steam : celui qu'il avait
+    /// avant (le dossier du jeu), pour qu'elle survive à son retrait de Steam.
+    mirror_names: HashMap<String, String>,
+    pub syncing: bool,
+    prefix_manual: bool,
 }
 
 fn home() -> PathBuf { dirs::home_dir().unwrap_or_default() }
@@ -122,6 +135,11 @@ impl App {
     pub fn new(cc: &eframe::CreationContext) -> Self {
         let p = theme::MUSIC;
         theme::install(&cc.egui_ctx, &p);
+        // Les panneaux glissent en 0,2 s, comme sur Mac (easeOut 0.2).
+        // Sans marge de découpe : egui laisse sinon déborder de 3 px le contenu des
+        // listes, et l'ombre des jaquettes survolées teintait la barre latérale et
+        // le trait sous la barre d'outils (un effet « vibrant »).
+        cc.egui_ctx.style_mut(|s| { s.animation_time = 0.2; s.visuals.clip_rect_margin = 0.0; });
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let dir = store::support_dir("Biblijeu", Some("BIBLIJEU_SUPPORT"));
         let h = home();
@@ -149,7 +167,7 @@ impl App {
             backup: BackupState::default(), backup_progress: Arc::default(), backup_cancel: Arc::default(), last_auto: Instant::now(), launch_backup_done: false,
             search: String::new(), focus_search: false, selected: None, settings_tab: None, correction: None, confirm_restore: None, key_status: None,
             picks: vec![], plan_cache: None, watcher: None, changed: Arc::default(),
-            tx, rx, toast: Toast::default(), update: SelfUpdate::new(REPO, "Biblijeu"), test: Default::default(), test_done: false,
+            tx, rx, toast: Toast::default(), update: SelfUpdate::new(REPO, "Biblijeu"), test: Default::default(), test_done: false, mirror_names: HashMap::new(), syncing: false, prefix_manual: false,
         };
         app.flatpak_updates = app.settings.get_as("flatpakUpdates").unwrap_or_default();
         app.updates_checked_at = app.settings.get("updatesCheckedAt").as_i64();
@@ -199,7 +217,13 @@ impl App {
         std::thread::spawn(move || {
             let report = |t: String| { *progress.lock().unwrap() = t; ctx2.request_repaint(); };
             let mut found = scanner::scan_roms(&roots, &ex, &report);
-            if steam_on { report("Lecture de la bibliothèque Steam…".into()); found = merge_steam(found, steam::installed_games(), steam::shortcuts()); }
+            let mut adopted = vec![];
+            // Les jeux installés rangés dans les dossiers d'applications (« Games »…).
+            let known: HashSet<PathBuf> = found.iter().map(|i| i.path.clone()).collect();
+            let installed: Vec<Item> = scanner::scan_installed(&folders, &ex, &report).into_iter().filter(|i| !known.contains(&i.path)).collect();
+            let installed_ids: HashSet<String> = installed.iter().map(|i| i.id.clone()).collect();
+            found.extend(installed);
+            if steam_on { report("Lecture de la bibliothèque Steam…".into()); let (f, a) = merge_steam(found, steam::installed_games(), steam::shortcuts()); found = f; adopted = a; }
             let apps = scanner::scan_applications();
             if apps_on { found.extend(apps.games.iter().cloned()); }
             for p in manual {
@@ -216,6 +240,9 @@ impl App {
             }
             report("Recherche des émulateurs…".into());
             let emulators = emulators::detect(&folders);
+            // Un émulateur rangé là n'est pas un jeu installé.
+            let emu_paths: Vec<PathBuf> = emulators.iter().filter_map(|e| e.target.as_ref().map(PathBuf::from)).collect();
+            found.retain(|i| !installed_ids.contains(&i.id) || !scanner::game_folder(i).map(|f| emu_paths.iter().any(|t| t.starts_with(&f))).unwrap_or(false));
             for e in emulators.iter().filter(|e| e.how != How::Proton) {
                 let d = apps.emu_icons.get(e.id());
                 found.push(Item { id: scanner::hash(&format!("emulator:{}", e.id())), kind: Kind::Emulator, title: e.name().into(), sort_title: catalog::normalize(e.name()),
@@ -226,10 +253,63 @@ impl App {
             let mut seen = HashSet::new();
             found.retain(|i| seen.insert(i.id.clone()));
             found.sort_by(|a, b| a.sort_title.cmp(&b.sort_title));
-            let _ = tx.send(Bg::Scanned(Scan { items: found, emulators, emu_icons: apps.emu_icons }));
+            let _ = tx.send(Bg::Scanned(Scan { items: found, emulators, emu_icons: apps.emu_icons, adopted }));
             ctx2.request_repaint();
         });
     }
+
+    /// Un jeu ajouté à Steam reprend ce que Biblijeu savait de lui (favori,
+    /// parties, jaquette, Proton), et la copie de ses sauvegardes garde le nom
+    /// qu'elle avait. Puis les sauvegardes de tous les jeux ajoutés à Steam sont
+    /// synchronisées avec leur copie Biblijeu.
+    fn adopt(&mut self, ctx: &egui::Context, adopted: &[Adopted]) {
+        for a in adopted.iter().filter(|a| a.old_id != a.new_id) {
+            if let Some(st) = self.states.remove(&a.old_id) { self.states.entry(a.new_id.clone()).or_insert(st); self.states_dirty = Some(Instant::now()); }
+        }
+        self.mirror_names = adopted.iter().map(|a| (a.new_id.clone(), a.old_title.clone())).collect();
+        let manual = std::mem::take(&mut self.prefix_manual);
+        self.sync_all(ctx, manual);
+    }
+
+    /// Le préfixe Steam d'un jeu Windows lancé sans Steam, et la copie de ses
+    /// sauvegardes que garde Biblijeu.
+    pub fn prefix_pair(&self, it: &Item) -> Option<(PathBuf, PathBuf)> {
+        if it.system != "windows" { return None; }
+        let g = it.steam_id.as_deref()?;
+        let steam = match steam::shortcut_id(g) {
+            Some(s) => steam::compat_prefix(s)?,
+            None if self.st(&it.id).without_steam => emulators::prefix_for(it, &self.prefixes()),
+            None => return None,
+        };
+        Some((steam, self.mirror_for(it)))
+    }
+
+    pub fn mirror_for(&self, it: &Item) -> PathBuf {
+        self.prefixes().join(emulators::slug(self.mirror_names.get(&it.id).unwrap_or(&it.title)))
+    }
+
+    /// Toutes les paires préfixe Steam / copie Biblijeu, en tâche de fond.
+    pub fn sync_all(&mut self, ctx: &egui::Context, manual: bool) {
+        if self.syncing { return; }
+        let pairs: Vec<(String, PathBuf, PathBuf)> = self.scanned.iter().filter_map(|it| self.prefix_pair(it).map(|(a, b)| (it.title.clone(), a, b))).collect();
+        self.syncing = true;
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let (mut done, mut failed) = (vec![], vec![]);
+            for (title, steam, mirror) in pairs {
+                match prefixsync::sync(&steam, &mirror) {
+                    Ok(r) if r.full_copy || r.to_steam > 0 => done.push(title),
+                    Ok(_) => {}
+                    Err(e) => failed.push(format!("{title} : {e}")),
+                }
+            }
+            let _ = tx.send(Bg::Synced(done, failed, manual));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Le bouton des réglages : relit Steam et synchronise tout de suite.
+    pub fn sync_now(&mut self, ctx: &egui::Context) { self.prefix_manual = true; self.rescan(ctx); }
 
     /// Les corrections de l'utilisateur par-dessus l'analyse.
     pub fn apply_overrides(&mut self) {
@@ -305,8 +385,10 @@ impl App {
         let resume = if from_start || !self.settings.bool("resumeOnLaunch") { ResumeReq::FromStart } else { self.resume_request(it) };
         let em = match emulator { Some(id) => self.emulators.iter().find(|e| e.id() == id), None => self.emulator_for(it) };
         let st = self.st(&it.id);
-        let proton = st.proton_version.clone().filter(|s| !s.is_empty()).or(Some(self.settings.string("protonVersion")).filter(|s| !s.is_empty()));
-        let o = emulators::Opts { emulator: em, direct: self.settings.bool("directLaunch"), disc, resume: resume.clone(), proton, prefixes: self.prefixes() };
+        // Le choix fait pour ce jeu dans Biblijeu, sinon celui fait dans Steam pour un jeu ajouté à Steam, sinon le réglage général.
+        let in_steam = it.steam_id.as_deref().and_then(steam::compat_id).and_then(steam::compat_tool);
+        let proton = st.proton_version.clone().filter(|s| !s.is_empty()).or(in_steam).or(Some(self.settings.string("protonVersion")).filter(|s| !s.is_empty()));
+        let o = emulators::Opts { emulator: em, without_steam: st.without_steam, direct: self.settings.bool("directLaunch"), disc, resume: resume.clone(), proton, prefixes: self.prefixes() };
         (emulators::plan(it, &o), resume)
     }
 
@@ -324,7 +406,22 @@ impl App {
         let Some(it) = self.item(id).cloned() else { return };
         let (p, _) = self.plan_for(&it, emulator, disc, from_start);
         if let Plan::Error(e) = &p { self.error = Some(e.clone()); return; }
-        if let Err(e) = emulators::run(&p) { self.error = Some(format!("{} n'a pas pu démarrer.\n{e}", it.title)); return; }
+        if let Some((steam, mirror)) = self.prefix_pair(&it) {
+            // Jeu dans le préfixe de Steam : ses sauvegardes les plus récentes d'abord,
+            // puis le jeu, puis on recopie sa progression dans la copie de Biblijeu.
+            let exe = if it.path.is_file() { Some(it.path.clone()) } else { scanner::find_launcher(&it.path) };
+            let exe = exe.and_then(|e| e.file_name().map(|n| n.to_string_lossy().to_string()));
+            let (tx, ctx, title) = (self.tx.clone(), ctx.clone(), it.title.clone());
+            std::thread::spawn(move || {
+                if let Err(e) = prefixsync::sync(&steam, &mirror) { let _ = tx.send(Bg::Error(format!("Sauvegardes de {title} non synchronisées : {e}\nLe jeu démarre quand même."))); }
+                if let Err(e) = emulators::run(&p) { let _ = tx.send(Bg::Error(format!("{title} n'a pas pu démarrer.\n{e}"))); ctx.request_repaint(); return; }
+                if let Some(exe) = exe {
+                    prefixsync::wait_for_exit(&exe);
+                    if let Err(e) = prefixsync::sync(&steam, &mirror) { let _ = tx.send(Bg::Error(format!("Sauvegardes de {title} non copiées : {e}"))); }
+                }
+                ctx.request_repaint();
+            });
+        } else if let Err(e) = emulators::run(&p) { self.error = Some(format!("{} n'a pas pu démarrer.\n{e}", it.title)); return; }
         self.update_state(id, |s| { s.last_played = Some(sys::now_ms()); s.play_count += 1; });
         self.toast.show(format!("{} démarre…", it.title));
         // Avant de jouer : les sauvegardes du disque, si elles sont plus récentes.
@@ -334,7 +431,12 @@ impl App {
     // ── Jaquettes ─────────────────────────────────────────────────────────
 
     fn has_no_cover(&self, it: &Item) -> bool {
-        if !(it.kind == Kind::Rom || it.steam_id.is_some() || it.system == "windows") || it.local_art.is_some() { return false; }
+        // Un jeu Linux installé (Hytale, Lutris…) n'a que l'icône de son raccourci :
+        // elle sert en attendant, mais ne doit pas l'écarter de la recherche groupée,
+        // sinon « Rechercher » trouve une jaquette que la recherche groupée ignorait.
+        let desktop = it.desktop_exec.is_some() && it.kind == Kind::Game;
+        if !(it.kind == Kind::Rom || it.steam_id.is_some() || it.system == "windows" || desktop) { return false; }
+        if it.local_art.is_some() && !desktop { return false; }
         let st = self.states.get(&it.id);
         st.map(|s| s.custom_artwork_path.is_none() && s.artwork_url.is_none()).unwrap_or(true)
     }
@@ -627,6 +729,8 @@ impl App {
             match m {
                 Bg::Scanned(s) => {
                     self.scanned = s.items;
+                    if std::env::var("BIBLIJEU_DUMP").is_ok() { for i in &self.scanned { eprintln!("ITEM {} | {} | {:?} | {}", i.title, i.system, i.steam_id, i.path.display()); } }
+                    self.adopt(ctx, &s.adopted);
                     self.emulators = s.emulators;
                     self.emu_icons = s.emu_icons;
                     self.protons = steam::protons().into_iter().map(|p| p.name).collect();
@@ -703,6 +807,13 @@ impl App {
                     } else { self.backup.last_failures = failures; self.backup.last_summary = summary; }
                 }
                 Bg::BackupFinished => { self.backup.running = false; self.refresh_backups(ctx); }
+                Bg::Synced(done, failed, manual) => {
+                    self.syncing = false;
+                    if !failed.is_empty() { self.error = Some(format!("Synchronisation des sauvegardes incomplète :\n{}", failed.join("\n"))); }
+                    else if !done.is_empty() { self.toast.show(format!("Sauvegardes de Biblijeu reprises dans Steam : {}", done.join(", "))); }
+                    else if manual { self.info = Some("Sauvegardes à jour : le préfixe Steam et la copie de Biblijeu sont identiques.".into()); }
+                }
+                Bg::Error(e) => self.error = Some(e),
             }
         }
         // Les fenêtres de choix revenues.
@@ -743,6 +854,13 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Tests seulement : `APP_POINTER=x,y` place la souris là, sans vraie souris.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if let Some((x, y)) = std::env::var("APP_POINTER").ok().and_then(|v| { let (a, b) = v.split_once(',')?; Some((a.parse().ok()?, b.parse().ok()?)) }) {
+            raw.events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump(ctx);
         self.images.begin_frame(ctx);
@@ -771,7 +889,12 @@ fn has_exe(d: &Path, depth: u32) -> bool {
 }
 
 /// Fusionne ce que Steam sait dans ce que l'analyse des dossiers a trouvé.
-fn merge_steam(mut items: Vec<Item>, games: Vec<steam::Game>, shortcuts: Vec<steam::Shortcut>) -> Vec<Item> {
+fn chrono_stamp() -> String {
+    std::process::Command::new("date").arg("+%Y-%m-%d-%H%M%S").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "ancien".into())
+}
+
+fn merge_steam(mut items: Vec<Item>, games: Vec<steam::Game>, shortcuts: Vec<steam::Shortcut>) -> (Vec<Item>, Vec<Adopted>) {
+    let mut adopted = vec![];
     let blank = |id: String, name: &str, sys: &str, path: PathBuf, added: i64, cover: Option<PathBuf>, steam: String| Item {
         id, kind: Kind::Game, title: name.into(), sort_title: catalog::normalize(name), system: sys.into(), path, discs: vec![], region: None, languages: vec![], tags: vec![],
         size: 0, added, source_root: None, raw_name: name.into(), local_art: cover, steam_id: Some(steam), desktop_exec: None, version: None, emulator_id: None };
@@ -795,16 +918,28 @@ fn merge_steam(mut items: Vec<Item>, games: Vec<steam::Game>, shortcuts: Vec<ste
     }
     for s in shortcuts {
         let cover = steam::shortcut_cover(&s);
-        if let Some(it) = items.iter_mut().find(|it| it.path == s.exe) {
+        // Le même jeu trouvé dans un dossier d'applications : un seul élément, celui de
+        // Steam (son identifiant garde ses réglages ; son programme est celui de Steam).
+        let l = s.exe.to_string_lossy().to_lowercase();
+        let win = [".exe", ".bat", ".msi", ".lnk"].iter().any(|e| l.ends_with(e));
+        // Seulement un programme du même genre : l'AppImage d'un dossier ne remplace pas son .exe.
+        let same_folder = items.iter().position(|it| it.steam_id.is_none() && it.path != s.exe && (it.system == "windows") == win
+            && scanner::game_folder(it).map(|f| s.exe.starts_with(&f)).unwrap_or(false));
+        if let (None, Some(i)) = (items.iter().position(|it| it.path == s.exe), same_folder) {
+            let it = &mut items[i];
+            adopted.push(Adopted { new_id: scanner::hash(&format!("steamshortcut:{}", s.game_id)), old_id: it.id.clone(), old_title: it.title.clone() });
+            it.id = scanner::hash(&format!("steamshortcut:{}", s.game_id)); it.path = s.exe.clone();
+            it.kind = Kind::Game; it.title = s.name.clone(); it.sort_title = catalog::normalize(&s.name); it.steam_id = Some(s.game_id.clone());
+            if it.local_art.is_none() { it.local_art = cover; }
+        } else if let Some(it) = items.iter_mut().find(|it| it.path == s.exe) {
+            if it.steam_id.is_none() { adopted.push(Adopted { new_id: it.id.clone(), old_id: it.id.clone(), old_title: it.title.clone() }); }
             it.kind = Kind::Game; it.title = s.name.clone(); it.sort_title = catalog::normalize(&s.name); it.steam_id = Some(s.game_id.clone());
             if it.local_art.is_none() { it.local_art = cover; }
         } else {
-            let l = s.exe.to_string_lossy().to_lowercase();
-            let win = [".exe", ".bat", ".msi", ".lnk"].iter().any(|e| l.ends_with(e));
             items.push(blank(scanner::hash(&format!("steamshortcut:{}", s.game_id)), &s.name, if win { "windows" } else { "linux" }, s.exe.clone(), 0, cover, s.game_id.clone()));
         }
     }
-    items
+    (items, adopted)
 }
 
 /// Une commande Flatpak ; `pct` reçoit l'avancement lu dans sa sortie.

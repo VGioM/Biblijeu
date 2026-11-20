@@ -108,7 +108,48 @@ pub fn parse_binary_vdf(b: &[u8]) -> HashMap<String, Vdf> {
     table(b, &mut i).unwrap_or_default()
 }
 
-pub struct Shortcut { pub game_id: String, pub name: String, pub exe: PathBuf, pub user: PathBuf, pub short_id: u32 }
+pub struct Shortcut { pub game_id: String, pub name: String, pub exe: PathBuf, pub user: PathBuf, pub short_id: u32, pub start_dir: PathBuf, pub options: String }
+
+/// L'identifiant court d'un jeu ajouté à Steam à la main (celui de son préfixe
+/// dans compatdata), ou rien pour un vrai jeu Steam.
+pub fn shortcut_id(game_id: &str) -> Option<u32> {
+    let g: u64 = game_id.parse().ok()?;
+    (g & 0xFFFF_FFFF == 0x0200_0000).then_some((g >> 32) as u32)
+}
+
+/// L'identifiant sous lequel Steam range le Proton et le préfixe d'un jeu.
+pub fn compat_id(game_id: &str) -> Option<u32> { shortcut_id(game_id).or_else(|| game_id.parse().ok()) }
+
+pub fn shortcut(game_id: &str) -> Option<Shortcut> { shortcuts().into_iter().find(|s| s.game_id == game_id) }
+
+/// Le préfixe que Steam donne à ce raccourci : y garder le jeu garde ses sauvegardes.
+pub fn compat_prefix(short_id: u32) -> Option<PathBuf> {
+    let id = short_id.to_string();
+    libraries().into_iter().map(|l| l.join("compatdata").join(&id)).find(|p| p.exists())
+        .or_else(|| root().map(|r| r.join("steamapps/compatdata").join(&id)))
+}
+
+/// Le Proton choisi dans Steam pour ce raccourci (Propriétés → Compatibilité),
+/// sous le nom d'un Proton installé.
+pub fn compat_tool(short_id: u32) -> Option<String> {
+    let text = std::fs::read_to_string(root()?.join("config/config.vdf")).ok()?;
+    let lower = text.to_lowercase();
+    let sec = lower.find("\"compattoolmapping\"")?;
+    // Le bloc { … } de CompatToolMapping, pour ne pas lire la suite du fichier.
+    let open = sec + lower[sec..].find('{')?;
+    let (mut depth, mut end) = (0, text.len());
+    for (i, c) in text[open..].char_indices() {
+        if c == '{' { depth += 1; } else if c == '}' { depth -= 1; if depth == 0 { end = open + i; break; } }
+    }
+    let block = &text[open..end];
+    let at = block.find(&format!("\"{short_id}\""))?;
+    let name = values("name", &block[at..]).into_iter().next().filter(|n| !n.is_empty())?;
+    // « proton_experimental » → « Proton - Experimental », « proton_9 » → « Proton 9.0 ».
+    let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+    let n = norm(&name);
+    let all = protons();
+    all.iter().find(|p| norm(&p.name) == n).or_else(|| all.iter().find(|p| norm(&p.name).starts_with(&n))).map(|p| p.name.clone())
+}
 
 pub fn shortcuts() -> Vec<Shortcut> {
     let Some(r) = root() else { return vec![] };
@@ -127,9 +168,13 @@ pub fn shortcuts() -> Vec<Shortcut> {
             // Ce que Steam ouvre : l'identifiant du raccourci en haut, la marque « raccourci » en bas.
             let game_id = ((id as u64) << 32 | 0x0200_0000).to_string();
             if !seen.insert(game_id.clone()) { continue; }
-            out.push(Shortcut { game_id, name, exe: PathBuf::from(exe.trim_matches(|c| c == '"' || c == ' ')), user: u.path(), short_id: id });
+            let text = |k: &str| match f(k) { Some(Vdf::Str(s)) => s.trim_matches(|c| c == '"' || c == ' ').to_string(), _ => String::new() };
+            out.push(Shortcut { game_id, name, exe: PathBuf::from(exe.trim_matches(|c| c == '"' || c == ' ')), user: u.path(), short_id: id,
+                start_dir: PathBuf::from(text("StartDir")), options: text("LaunchOptions") });
         }
     }
+    // Un ordre fixe : shortcuts.vdf est lu dans une table sans ordre.
+    out.sort_by(|a, b| a.name.cmp(&b.name).then(a.game_id.cmp(&b.game_id)));
     out
 }
 

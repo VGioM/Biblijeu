@@ -13,7 +13,7 @@ use egui::{Align, Align2, Color32, Layout, Rect, RichText, Sense, Stroke, Ui, Ve
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub enum Patch { Emulator(Option<String>), Proton(Option<String>), Slot(Option<u32>), Kind(Option<Kind>), System(Option<String>), Fav, Hide, ForgetState }
+pub enum Patch { Emulator(Option<String>), Proton(Option<String>), Slot(Option<u32>), Kind(Option<Kind>), System(Option<String>), Fav, Hide, ForgetState, WithoutSteam }
 
 pub enum Act {
     Sel(String),
@@ -63,7 +63,7 @@ fn counts(app: &App) -> HashMap<String, usize> {
         let st = app.states.get(&it.id).unwrap_or(&default);
         if st.hidden { continue; }
         let playable = app.playable(it);
-        for (id, _, _) in catalog::SECTIONS { if catalog::in_section(it, id, st, playable) { *c.entry(id.to_string()).or_default() += 1; } }
+        for (id, _, _) in catalog::SECTIONS.iter().chain(catalog::STEAM_SECTIONS) { if catalog::in_section(it, id, st, playable) { *c.entry(id.to_string()).or_default() += 1; } }
         if matches!(it.kind, Kind::Rom | Kind::Game) && !it.system.is_empty() { *c.entry(format!("system:{}", it.system)).or_default() += 1; }
         for r in &roots { if catalog::in_section(it, &format!("source:{r}"), st, playable) { *c.entry(format!("source:{r}")).or_default() += 1; } }
     }
@@ -101,10 +101,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         .frame(egui::Frame::new().fill(p.toolbar).inner_margin(egui::Margin::symmetric(16, 8)).stroke(Stroke::new(1.0_f32, p.hairline)))
         .show(ctx, |ui| toolbar(app, ui, list.len(), &mut acts));
     let insp = app.selected.clone().filter(|_| app.settings.bool("showInspector") && !page).and_then(|id| app.item(&id).cloned());
-    if let Some(it) = insp {
+    // Le panneau glisse depuis la droite ; à la fermeture, il garde le dernier
+    // jeu affiché le temps de sortir de l'écran.
+    let last = egui::Id::new("insp-last");
+    if let Some(it) = &insp { ctx.data_mut(|d| d.insert_temp(last, it.id.clone())); }
+    let open = insp.is_some();
+    let shown = insp.or_else(|| ctx.data(|d| d.get_temp::<String>(last)).and_then(|id| app.item(&id).cloned()));
+    if let Some(it) = shown {
         egui::SidePanel::right("insp").resizable(false).exact_width(318.0)
             .frame(egui::Frame::new().fill(p.panel).inner_margin(egui::Margin::symmetric(16, 16)).stroke(Stroke::new(1.0_f32, p.hairline)))
-            .show(ctx, |ui| egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| inspector(app, ui, &it, &mut acts)));
+            .show_animated(ctx, open, |ui| egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| inspector(app, ui, &it, &mut acts)));
     }
     egui::CentralPanel::default().frame(egui::Frame::new().fill(p.content)).show(ctx, |ui| {
         if sel == "updates" { egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| page_frame(ui, |ui| updates(app, ui, &mut acts))); }
@@ -141,6 +147,7 @@ fn apply(app: &mut App, ctx: &egui::Context, a: Act) {
             app.update_state(&id, |s| match p {
                 Patch::Emulator(e) => s.emulator_id = e,
                 Patch::Proton(v) => s.proton_version = v,
+                Patch::WithoutSteam => s.without_steam = !s.without_steam,
                 Patch::Slot(n) => { s.resume_slot = n; if n.is_some() { s.state_file_path = None; } }
                 Patch::Kind(k) => s.kind_override = k,
                 Patch::System(v) => s.system_override = v,
@@ -219,8 +226,12 @@ fn sidebar(app: &mut App, ui: &mut Ui, acts: &mut Vec<Act>) {
         }
         let mut systems: Vec<&catalog::System> = catalog::SYSTEMS.iter().filter(|s| c.contains_key(&format!("system:{}", s.id))).collect();
         systems.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        if !systems.is_empty() {
+        let steam: Vec<_> = catalog::STEAM_SECTIONS.iter().filter(|s| c.contains_key(s.0)).collect();
+        if !systems.is_empty() || !steam.is_empty() {
             ui::section_title(ui, &p, "Consoles");
+            for (id, name, icon) in steam {
+                if ui::side_row(ui, &p, icon, name, c.get(*id).map(|n| n.to_string()), None, sel == *id).clicked() { acts.push(Act::Sel(id.to_string())); }
+            }
             for s in systems {
                 let k = format!("system:{}", s.id);
                 if ui::side_row(ui, &p, s.icon, s.name, c.get(&k).map(|n| n.to_string()), None, sel == k).clicked() { acts.push(Act::Sel(k)); }
@@ -366,6 +377,28 @@ fn draw_cover(app: &mut App, ui: &Ui, rect: Rect, it: &Item, radius: u8, size: S
     }
 }
 
+/// L'ombre d'une jaquette, plus longue et plus diffuse au survol (`t` de 0 à 1).
+fn card_shadow(ui: &Ui, rect: Rect, t: f32) {
+    // Assez courte pour ne pas atteindre le trait sous la barre d'outils, qui sinon
+    // paraissait changer de teinte quand on survolait la première rangée.
+    let s = egui::epaint::Shadow { offset: [0, (3.0 + 2.0 * t) as i8], blur: (10.0 + 6.0 * t) as u8, spread: 0, color: Color32::from_black_alpha(107) };
+    ui.painter().add(s.as_shape(rect, egui::CornerRadius::same(9)));
+}
+
+/// Le rond « Jouer » / « Infos » posé sur la jaquette survolée : il apparaît en
+/// fondu en passant de 85 % à 100 % de sa taille, comme sur Mac.
+fn hover_button(ui: &mut Ui, center: egui::Pos2, icon: &str, id: egui::Id, t: f32, enabled: bool) -> egui::Response {
+    let r = 19.0 * (0.85 + 0.15 * t);
+    let rect = Rect::from_center_size(center, Vec2::splat(2.0 * r));
+    let resp = ui.interact(rect, id, if enabled { Sense::click() } else { Sense::hover() });
+    let a = if enabled { t } else { t * 0.45 };
+    let fill = if enabled && resp.hovered() { 190 } else { 140 };
+    ui.painter().circle(center, r, Color32::from_black_alpha((fill as f32 * t) as u8), Stroke::new(1.2_f32, Color32::WHITE.gamma_multiply(0.85 * a)));
+    let s = 15.0 * (0.85 + 0.15 * t);
+    icons::image(icon, s, Color32::WHITE.gamma_multiply(a)).paint_at(ui, Rect::from_center_size(center, Vec2::splat(s)));
+    resp
+}
+
 fn grid(app: &mut App, ui: &mut Ui, list: &[usize], acts: &mut Vec<Act>) {
     let p = app.p;
     let (pad, gap) = (22.0, 18.0);
@@ -376,8 +409,11 @@ fn grid(app: &mut App, ui: &mut Ui, list: &[usize], acts: &mut Vec<Act>) {
     let ch = cw * 4.0 / 3.0;
     let row_h = ch + 50.0;
     let mut hit = false;
-    let scroll = egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, list.len().div_ceil(cols), |ui, range| {
-        ui.add_space(20.0);
+    let mut over_card = false;
+    // Un clic qui ferme un menu contextuel ne doit pas aussi fermer le panneau.
+    let menu_open = ui.ctx().is_context_menu_open();
+    let area = egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, list.len().div_ceil(cols), |ui, range| {
+        ui.add_space(26.0);
         for r in range {
             let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
             for c in 0..cols {
@@ -388,25 +424,32 @@ fn grid(app: &mut App, ui: &mut Ui, list: &[usize], acts: &mut Vec<Act>) {
                 let card = Rect::from_min_size(cover.min, Vec2::new(cw, ch + 44.0));
                 let resp = ui.interact(card, ui.id().with(("card", &it.id)), Sense::click());
                 let selected = app.selected.as_deref() == Some(it.id.as_str());
-                let hovered = resp.hovered();
-                ui::shadow(ui, cover, 9, selected);
+                // `contains_pointer` et non `hovered` : egui retire le survol de la
+                // carte dès qu'on appuie sur un des boutons posés dessus, ce qui les
+                // faisait disparaître (clignotement, clic qui tombait sur la carte).
+                let over = resp.contains_pointer();
+                over_card |= over;
+                let t = ui.ctx().animate_bool_with_time_and_easing(ui.id().with(("hover", &it.id)), over, 0.16, egui::emath::easing::cubic_out);
+                // Sélection : un voile clair derrière la carte, comme sur Mac.
+                if selected { ui.painter().rect_filled(card.expand(7.0), 10, theme::white(26)); }
+                // Au survol, la jaquette grossit très légèrement et son ombre s'allonge.
+                let cover = Rect::from_center_size(cover.center(), cover.size() * (1.0 + 0.022 * t));
+                card_shadow(ui, cover, t);
                 draw_cover(app, ui, cover, &it, 9, Size::Thumb);
                 let playable = app.playable(&it);
-                let b = ui::badge(ui, cover.left_bottom() + Vec2::new(6.0, -6.0), Align2::LEFT_BOTTOM, &badge_for(&it));
+                ui::badge(ui, cover.left_bottom() + Vec2::new(6.0, -6.0), Align2::LEFT_BOTTOM, &badge_for(&it));
                 if it.discs.len() > 1 { ui::badge(ui, cover.right_bottom() + Vec2::new(-6.0, -6.0), Align2::RIGHT_BOTTOM, &format!("{} disques", it.discs.len())); }
-                let _ = b;
                 if !playable { icons::image("warning", 15.0, p.warm).paint_at(ui, Rect::from_min_size(cover.right_top() + Vec2::new(-22.0, 7.0), Vec2::splat(15.0))); }
-                if hovered {
-                    ui.painter().rect_filled(cover, 9, Color32::from_black_alpha(70));
-                    let cy = cover.center().y;
-                    if playable && ui::circle_button(ui, egui::pos2(cover.center().x - 26.0, cy), "play", ui.id().with(("play", &it.id))).clicked() {
+                if t > 0.0 {
+                    ui.painter().rect_filled(cover, 9, Color32::from_black_alpha((92.0 * t) as u8));
+                    let c = cover.center();
+                    if hover_button(ui, egui::pos2(c.x - 24.0, c.y), "play", ui.id().with(("play", &it.id)), t, over && playable).clicked() {
                         acts.push(Act::Play { id: it.id.clone(), emu: None, disc: None, from_start: false }); hit = true;
                     }
-                    let ix = if playable { cover.center().x + 26.0 } else { cover.center().x };
-                    if ui::circle_button(ui, egui::pos2(ix, cy), "info", ui.id().with(("info", &it.id))).clicked() { acts.push(Act::Select(Some(it.id.clone()))); hit = true; }
+                    if hover_button(ui, egui::pos2(c.x + 24.0, c.y), "info", ui.id().with(("info", &it.id)), t, over).clicked() { acts.push(Act::Select(Some(it.id.clone()))); hit = true; }
                 }
-                ui.painter().rect_stroke(cover, 9, if selected { Stroke::new(2.5_f32, p.accent) } else { Stroke::NONE }, egui::StrokeKind::Outside);
                 let tw = cw;
+                let cover = Rect::from_min_size(egui::pos2(x, row.top()), Vec2::new(cw, ch));
                 ui::text_in(ui, Rect::from_min_size(egui::pos2(x, cover.bottom() + 7.0), Vec2::new(tw, 17.0)), &it.title, theme::bold(12.5), p.text);
                 let mut subtitle = it.subtitle();
                 if app.st(&it.id).favorite { subtitle = format!("♥ {subtitle}"); }
@@ -421,9 +464,10 @@ fn grid(app: &mut App, ui: &mut Ui, list: &[usize], acts: &mut Vec<Act>) {
         }
         ui.add_space(30.0);
     });
-    // Cliquer entre les jeux ferme le panneau.
-    let bg = ui.interact(scroll.inner_rect, ui.id().with("bg"), Sense::click());
-    if bg.clicked() && !hit { acts.push(Act::Select(None)); }
+    // Cliquer entre les jeux ferme le panneau. On lit le clic directement : un
+    // widget de fond serait couvert par les cartes ou les couvrirait.
+    let (clicked, pos) = ui.input(|i| (i.pointer.primary_clicked(), i.pointer.interact_pos()));
+    if clicked && !hit && !over_card && pos.map(|p| area.inner_rect.contains(p)).unwrap_or(false) && !menu_open { acts.push(Act::Select(None)); }
 }
 
 // ── Panneau d'informations ────────────────────────────────────────────────
@@ -507,22 +551,44 @@ fn inspector(app: &mut App, ui: &mut Ui, it: &Item, acts: &mut Vec<Act>) {
         });
     }
 
-    if it.system == "windows" && it.steam_id.is_none() {
+    let short = it.steam_id.as_deref().and_then(crate::steam::shortcut_id);
+    let compat = it.steam_id.as_deref().and_then(crate::steam::compat_id);
+    let direct_steam = it.steam_id.is_some() && short.is_none() && st.without_steam;
+    if it.steam_id.is_some() && short.is_none() && it.system == "windows" {
+        section(ui, &p, "Steam", |ui| {
+            let mut on = st.without_steam;
+            if ui.checkbox(&mut on, "Lancer sans Steam, directement avec Proton").changed() { acts.push(Act::Patch(it.id.clone(), Patch::WithoutSteam)); }
+            small(ui, &p, if on { "Le jeu garde son préfixe Steam. S'il exige Steam (DRM, succès, multijoueur), il ne démarrera pas : décochez alors." }
+                else { "Lancé par Steam, avec le Proton choisi pour ce jeu dans Steam." });
+        });
+    }
+    if it.system == "windows" && (it.steam_id.is_none() || short.is_some() || direct_steam) {
         section(ui, &p, "Proton", |ui| {
             if app.protons.is_empty() { notice(ui, &p, "Aucun Proton trouvé. Installez « Proton Experimental » depuis Steam (Bibliothèque → Outils), ou GE-Proton avec ProtonPlus."); return; }
+            // Pour un jeu ajouté à Steam, le Proton choisi dans Steam passe avant le réglage général
+            // (lu une fois, puis gardé en mémoire : config.vdf est gros).
+            let in_steam = compat.and_then(|s| ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_insert_with(egui::Id::new(("steam-tool", s)), || crate::steam::compat_tool(s)).clone()));
             let general = { let g = app.settings.string("protonVersion"); if g.is_empty() { app.protons[0].clone() } else { g } };
+            let general = match in_steam { Some(t) => format!("Comme dans Steam ({t})"), None => format!("Réglage général ({general})") };
             let cur = st.proton_version.clone();
-            egui::ComboBox::from_id_salt("proton").width(ui.available_width()).selected_text(cur.clone().unwrap_or(format!("Réglage général ({general})"))).show_ui(ui, |ui| {
-                if ui.selectable_label(cur.is_none(), format!("Réglage général ({general})")).clicked() { acts.push(Act::Patch(it.id.clone(), Patch::Proton(None))); }
+            egui::ComboBox::from_id_salt("proton").width(ui.available_width()).selected_text(cur.clone().unwrap_or(general.clone())).show_ui(ui, |ui| {
+                if ui.selectable_label(cur.is_none(), &general).clicked() { acts.push(Act::Patch(it.id.clone(), Patch::Proton(None))); }
                 for pr in &app.protons { if ui.selectable_label(cur.as_deref() == Some(pr), pr).clicked() { acts.push(Act::Patch(it.id.clone(), Patch::Proton(Some(pr.clone())))); } }
             });
-            small(ui, &p, &format!("Lancé {} avec un préfixe propre à ce jeu.", if app.has_umu { "par umu-run, dans le conteneur Steam Linux Runtime," } else { "par Proton" }));
-            if ui::button_icon(ui, &p, "folder", "Préfixe du jeu").clicked() { acts.push(Act::OpenPath(crate::emulators::prefix_for(it, &app.prefixes()))); }
+            let how = if app.has_umu { "par umu-run, dans le conteneur Steam Linux Runtime," } else { "par Proton" };
+            let pair = app.prefix_pair(it);
+            small(ui, &p, &if pair.is_some() { format!("Lancé directement {how} sans passer par Steam, dans le préfixe Steam du jeu. Biblijeu garde une copie de ses sauvegardes, synchronisée avant et après chaque partie : le plus récent l'emporte.") } else { format!("Lancé {how} avec un préfixe propre à ce jeu.") });
+            ui.horizontal(|ui| {
+                if ui::button_icon(ui, &p, "folder", "Préfixe du jeu").clicked() { acts.push(Act::OpenPath(crate::emulators::prefix_for(it, &app.prefixes()))); }
+                if let Some((_, m)) = &pair { if ui::button_icon(ui, &p, "folder", "Copie Biblijeu").clicked() { let _ = std::fs::create_dir_all(m); acts.push(Act::OpenPath(m.clone())); } }
+            });
         });
     }
 
-    if it.steam_id.is_some() {
-        section(ui, &p, "Steam", |ui| small(ui, &p, &format!("Lancé par Steam, avec {}.", if it.system == "windows" { "le Proton choisi pour ce jeu dans Steam" } else { "ses réglages" })));
+    if it.steam_id.is_some() && !(short.is_none() && it.system == "windows") {
+        section(ui, &p, "Steam", |ui| small(ui, &p, &if short.is_some() {
+            if it.system == "windows" { "Ajouté à Steam à la main : il n'a pas besoin de Steam, il se lance directement avec Proton.".to_string() } else { "Ajouté à Steam à la main : il se lance directement, sans Steam.".to_string() }
+        } else { format!("Lancé par Steam, avec {}.", if it.system == "windows" { "le Proton choisi pour ce jeu dans Steam" } else { "ses réglages" }) }));
     }
 
     if let (Kind::Rom, Some(e)) = (it.kind, emu.as_ref()) {
@@ -942,13 +1008,13 @@ fn settings_sheet(app: &mut App, ctx: &egui::Context, acts: &mut Vec<Act>) {
                         paths(ui, &p, &app.settings.strings("excludedFolders"), "excludedFolders", acts);
                         if ui.button("Ajouter…").clicked() { acts.push(Act::Pick(PickFor::Excluded)); }
                     });
-                    ui::group(ui, &p, "Dossiers d'émulateurs et d'AppImage", |ui| {
-                        small(ui, &p, "Cherchés sur trois niveaux, en plus des Flatpak et des paquets installés : « Emulateurs/Playstation 3/rpcs3.AppImage » est trouvé.");
+                    ui::group(ui, &p, "Dossiers d'applications et de jeux installés", |ui| {
+                        small(ui, &p, "Les émulateurs (« Emulateurs/Playstation 3/rpcs3.AppImage », en plus des Flatpak et des paquets) et les jeux installés, un dossier par jeu (« Games/Gothic 1 Remake »), Windows ou Linux.");
                         paths(ui, &p, &app.settings.strings("applicationFolders"), "applicationFolders", acts);
                         if ui.button("Ajouter…").clicked() { acts.push(Act::Pick(PickFor::AppFolder)); }
                     });
                     ui::group(ui, &p, "", |ui| {
-                        check(ui, app, acts, "scanSteam", "Inclure les jeux Steam", "Les jeux installés et ceux ajoutés à Steam à la main ; ils se lancent par Steam.");
+                        check(ui, app, acts, "scanSteam", "Inclure les jeux Steam", "Les jeux Steam se lancent par Steam ; ceux ajoutés à Steam à la main se lancent directement (avec Proton pour un jeu Windows).");
                         check(ui, app, acts, "scanApplications", "Inclure les jeux et lanceurs installés", "Ceux du menu des applications (Flatpak compris) qui se déclarent comme jeux.");
                         check(ui, app, acts, "watchFolders", "Surveiller les dossiers", "Un jeu copié dans un dossier, ou installé par Steam, apparaît tout seul.");
                         let manual = app.settings.strings("manualApplications");
@@ -978,6 +1044,13 @@ fn settings_sheet(app: &mut App, ctx: &egui::Context, acts: &mut Vec<Act>) {
                             if ui.button("Ouvrir").clicked() { acts.push(Act::OpenPath(app.prefixes())); }
                             ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.add(egui::Label::new(RichText::new(format!("Préfixes : {}", app.settings.string("prefixesFolder"))).size(11.5).color(p.muted)).truncate()));
                         }));
+                    });
+                    ui::group(ui, &p, "Sauvegardes des jeux ajoutés à Steam", |ui| {
+                        small(ui, &p, "Un jeu Windows ajouté à Steam se lance sans Steam, mais dans le préfixe que Steam lui a créé. Biblijeu garde une copie de ses sauvegardes (Documents, AppData…) dans son dossier de préfixes, synchronisée dans les deux sens au démarrage de Biblijeu et avant et après chaque partie : le fichier le plus récent l'emporte. Un jeu joué avec Biblijeu avant son ajout à Steam y retrouve donc sa progression, et le retirer de Steam ne la perd pas.");
+                        ui.horizontal(|ui| {
+                            if app.syncing { ui::spinner(ui, 14.0); ui.label("Synchronisation…"); }
+                            else if ui.button("Synchroniser maintenant").clicked() { app.sync_now(ctx); }
+                        });
                     });
                     ui::group(ui, &p, "Émulateur par console", |ui| {
                         let prefs: HashMap<String, String> = app.settings.get_as("emulatorForSystem").unwrap_or_default();

@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+pub mod desktop;
 pub mod icons;
 pub mod images;
 pub mod selfupdate;

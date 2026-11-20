@@ -55,7 +55,7 @@ pub fn is_work_folder(n: &str) -> bool { n.ends_with(".noindex") || n.ends_with(
 
 const NOISE: &[&str] = &["unins", "setup", "install", "vcredist", "dxsetup", "dxwebsetup", "directx", "crashreport", "crashhandler", "updater", "update",
     "redist", "config", "settings", "readme", "uninstall", "activation", "unitycrashhandler", "launcherhelper", "bssndrpt", "crashpad", "reporter",
-    "easyanticheat", "eac_launcher", "battleye", "beservice", "quicksfv", "dxdiag", "vc_redist", "dotnet", "physx", "oalinst", "ue4prereq", "uninst"];
+    "easyanticheat", "eac_launcher", "battleye", "beservice", "quicksfv", "dxdiag", "vc_redist", "dotnet", "physx", "oalinst", "ue4prereq", "uninst", "repair", "error", "webhelper", "crashpad_handler", "cefsharp", "extension", "overlay", "helper"];
 const TRACKS: &[&str] = &["bin", "img", "raw", "wav", "mp3", "ape", "flac", "sub", "ccd", "mds", "ecm"];
 const SHEETS: &[&str] = &["cue", "gdi", "m3u", "toc"];
 const EVERYDAY: &[&str] = &["md", "bin", "img", "gz", "elf", "raw", "dat", "txt", "sub", "wav", "mp3", "flac", "ape", "zip", "7z", "bat", "lnk", "msi", "sh", "x86_64", "pkg"];
@@ -253,10 +253,14 @@ fn games_in(dir: &Path, files: &[F], root: &Path) -> Vec<Item> {
     out
 }
 
-fn scan_root(root: &Path, ex: &[String], progress: &dyn Fn(String)) -> Vec<Item> {
+fn scan_root(root: &Path, ex: &[String], progress: &dyn Fn(String)) -> Vec<Item> { walk(root, ex, progress, true) }
+
+/// `roms` : chercher aussi des ROM. Sans, on ne cherche que des jeux installés,
+/// à quatre niveaux au plus (« Jeu/Bin/Win64/jeu.exe »).
+fn walk(root: &Path, ex: &[String], progress: &dyn Fn(String), roms: bool) -> Vec<Item> {
     let mut items = vec![];
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut stack = vec![(root.to_path_buf(), 0u32)];
+    while let Some((dir, depth)) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         let (mut files, mut subdirs) = (vec![], vec![]);
         for e in rd.flatten() {
@@ -279,8 +283,8 @@ fn scan_root(root: &Path, ex: &[String], progress: &dyn Fn(String)) -> Vec<Item>
         if dir != root {
             if let Some((l, sys)) = installed_launcher(&dir, &files) { items.push(make_item(&l, catalog::system(sys).unwrap(), root, Some(tree_size(&dir, 0)))); continue; }
         }
-        stack.extend(subdirs);
-        items.extend(games_in(&dir, &files, root));
+        if roms { stack.extend(subdirs.into_iter().map(|d| (d, depth + 1))); items.extend(games_in(&dir, &files, root)); }
+        else if depth < 4 { stack.extend(subdirs.into_iter().map(|d| (d, depth + 1))); }
     }
     items
 }
@@ -320,6 +324,99 @@ pub fn scan_roms(roots: &[String], ex: &[String], progress: &dyn Fn(String)) -> 
         items.extend(scan_root(root, &real, progress));
     }
     group_multi_disc(items)
+}
+
+/// Les jeux installés dans les dossiers d'applications (un dossier par jeu,
+/// Windows ou Linux), sans y chercher de ROM.
+/// Un seul jeu par dossier, nommé comme lui (« Games/Gothic 1 Remake »).
+pub fn scan_installed(roots: &[String], ex: &[String], progress: &dyn Fn(String)) -> Vec<Item> {
+    let mut items = vec![];
+    for r in roots {
+        let root = Path::new(r);
+        if !root.is_dir() || excluded(r, ex) { continue; }
+        let Ok(rd) = std::fs::read_dir(root) else { continue };
+        let mut tops: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        tops.sort();
+        for top in tops {
+            let name = top.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let n = name.to_lowercase();
+            if name.starts_with('.') || SKIPPED.contains(&n.as_str()) || excluded(&top.to_string_lossy(), ex) { continue; }
+            progress(format!("Analyse de {name}…"));
+            let found = best_exe(&top).map(|e| (e, "windows"))
+                .or_else(|| walk(&top, ex, &|_| {}, false).into_iter().next().map(|i| (i.path, "linux"))
+                    .or_else(|| { let rd = std::fs::read_dir(&top).ok()?; let files: Vec<F> = rd.flatten().filter_map(|e| {
+                        let p = e.path(); let meta = std::fs::metadata(&p).ok()?; let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+                        Some(F { name: e.file_name().to_string_lossy().to_string(), path: p, ext, meta }) }).collect();
+                        installed_launcher(&top, &files).map(|(p, _)| (p, "linux")) }));
+            let Some((exe, sys)) = found else { continue };
+            let mut it = make_item(&exe, catalog::system(sys).unwrap(), root, Some(tree_size(&top, 0)));
+            it.title = catalog::parse_name(&name).title;
+            it.sort_title = catalog::normalize(&it.title);
+            items.push(it);
+        }
+    }
+    items
+}
+
+/// Le .exe qui lance le jeu rangé dans `top` : celui qui porte le nom du dossier,
+/// sinon un lanceur, sinon le plus gros ; jamais un outil (désinstalleur, rapport de plantage…).
+fn best_exe(top: &Path) -> Option<PathBuf> {
+    let folder = catalog::normalize(&top.file_name().unwrap_or_default().to_string_lossy());
+    let mut found: Vec<(i32, u32, u64, PathBuf)> = vec![];
+    let mut queue = std::collections::VecDeque::from([(top.to_path_buf(), 0u32)]);
+    while let Some((d, depth)) = queue.pop_front() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            let p = e.path();
+            let Ok(meta) = std::fs::metadata(&p) else { continue };
+            if meta.is_dir() {
+                if depth < 4 && !name.starts_with('.') && !SKIPPED.contains(&name.as_str()) { queue.push_back((p, depth + 1)); }
+            } else if name.ends_with(".exe") {
+                let stem = name.trim_end_matches(".exe");
+                if NOISE.iter().any(|w| stem.contains(w)) { continue; }
+                // Le nom du dossier d'abord (« Ghost of Tsushima DC » → GhostOfTsushima.exe), puis un lanceur.
+                let alnum = |x: &str| x.chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+                let (n, f) = (alnum(stem), alnum(&folder));
+                let mut s = score_launcher(&p, &folder);
+                if s < 80 && n.len() >= 4 && (f.contains(&n) || n.contains(&f)) { s = 80; }
+                if s < 75 && stem.contains("launcher") { s = 75; }
+                found.push((s, depth, meta.len(), p));
+            }
+        }
+    }
+    // À égalité, le moins enfoui (pas la copie d'un sous-dossier « NoDVD »), puis le plus gros.
+    found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(b.2.cmp(&a.2)));
+    found.into_iter().next().map(|f| f.3)
+}
+
+/// Le programme Windows qui lance le jeu installé dans `dir` (ou plus bas).
+pub fn find_launcher(dir: &Path) -> Option<PathBuf> {
+    let mut queue = std::collections::VecDeque::from([(dir.to_path_buf(), 0u32)]);
+    while let Some((d, depth)) = queue.pop_front() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let mut files = vec![];
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let p = e.path();
+            let Ok(meta) = std::fs::metadata(&p) else { continue };
+            if meta.is_dir() {
+                if depth < 4 && !name.starts_with('.') && !SKIPPED.contains(&name.to_lowercase().as_str()) { queue.push_back((p, depth + 1)); }
+            } else {
+                let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+                files.push(F { name, path: p, ext, meta });
+            }
+        }
+        if let Some((l, "windows")) = installed_launcher(&d, &files) { return Some(l); }
+    }
+    None
+}
+
+/// Le dossier du jeu : celui juste sous la racine analysée.
+pub fn game_folder(it: &Item) -> Option<PathBuf> {
+    let root = PathBuf::from(it.source_root.as_ref()?);
+    let first = it.path.strip_prefix(&root).ok()?.components().next()?;
+    Some(root.join(first))
 }
 
 // ── Applications (.desktop) ───────────────────────────────────────────────
@@ -386,6 +483,8 @@ pub fn scan_applications() -> Apps {
             let g = |k: &str| d.get(k).cloned().unwrap_or_default();
             if g("Type") != "Application" || g("NoDisplay") == "true" || g("Hidden") == "true" || g("Exec").is_empty() { continue; }
             let id = n.trim_end_matches(".desktop").to_string();
+            // Biblijeu lui-même (il installe son raccourci pour avoir son icône).
+            if id == "biblijeu" { continue; }
             let exec = g("Exec");
             // Les raccourcis que Steam crée pour ses jeux : Steam les connaît déjà.
             if exec.contains("steam://rungameid/") { continue; }
